@@ -90,7 +90,7 @@ export default function ProgressView({ content, progress, replace }) {
           <textarea id="restore-input" rows={3} value={input} onChange={(e) => { setInput(e.target.value); setMsg(null); }} placeholder="Вставь код сохранения" spellCheck="false" />
           <div className="row">
             <button className="btn" type="submit" disabled={!input.trim()}>Восстановить</button>
-            <button className="btn ghost" type="button" onClick={exportFile}>Скачать файл .json</button>
+            {window.self === window.top && <button className="btn ghost" type="button" onClick={exportFile}>Скачать файл .json</button>}
             <label className="btn ghost file-btn">Загрузить файл<input type="file" accept="application/json,.json" onChange={importFile} /></label>
           </div>
           {msg && <p className={msg.bad ? 'bad' : 'ok'} role="status">{msg.text}</p>}

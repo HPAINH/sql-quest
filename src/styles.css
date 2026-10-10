@@ -53,6 +53,35 @@
   --shadow: 0 1px 2px rgba(16, 44, 76, 0.06);
   color-scheme: light;
 }
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme='dark']) {
+  --bg: #eef3f8;
+  --surface: #ffffff;
+  --surface-2: #f4f8fc;
+  --rule: #c3d3e4;
+  --rule-soft: #dbe5ef;
+  --grid: rgba(25, 80, 140, 0.06);
+  --ink: #102c4c;
+  --ink-2: #44617f;
+  --ink-3: #6a849f;
+  --signal: #f5b72b;
+  --signal-ink: #14233a;
+  --signal-text: #8a5800;
+  --ok: #157f55;
+  --ok-bg: rgba(21, 127, 85, 0.09);
+  --bad: #bf3d28;
+  --bad-bg: rgba(191, 61, 40, 0.08);
+  --warn-bg: rgba(245, 183, 43, 0.14);
+  --sql-key: #0a5fa3;
+  --sql-str: #a14d00;
+  --sql-num: #6a3fc0;
+  --sql-fn: #0b7a63;
+  --active-line: rgba(25, 80, 140, 0.04);
+  --selection: rgba(10, 95, 163, 0.16);
+  --shadow: 0 1px 2px rgba(16, 44, 76, 0.06);
+  color-scheme: light;
+}
+}
 
 :root {
   --sans: 'Onest', system-ui, -apple-system, 'Segoe UI', sans-serif;
@@ -84,7 +113,7 @@ button { font: inherit; color: inherit; }
 .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 
 .topbar {
-  position: sticky; top: 0; z-index: 20;
+  position: sticky; top: env(safe-area-inset-top, 0px); z-index: 20;
   display: flex; align-items: center; gap: 24px;
   padding: 10px 24px;
   background: var(--bg);

@@ -5,7 +5,20 @@ const raw = {};
 for (const v of Object.values(types)) if (typeof v === 'number') raw[v] = (x) => x;
 const MAX_ROWS = 50000;
 
-async function init(dataUrl) {
+function fromBase64(text) {
+  const bin = atob(text.trim());
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes]);
+}
+
+async function fetchBlob(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Не удалось загрузить ${url} (${res.status})`);
+  return url.endsWith('.b64.txt') ? fromBase64(await res.text()) : res.blob();
+}
+
+async function init(dataUrl, fsUrl) {
   const res = await fetch(dataUrl);
   if (!res.ok) throw new Error(`Не удалось загрузить базу (${res.status})`);
   const total = Number(res.headers.get('content-length')) || 0;
@@ -23,8 +36,10 @@ async function init(dataUrl) {
     }
     blob = new Blob(chunks);
   } else blob = await res.blob();
+  if (dataUrl.endsWith('.b64.txt')) blob = fromBase64(await blob.text());
+  const fsBundle = fsUrl ? await fetchBlob(fsUrl) : undefined;
   postMessage({ type: 'progress', got: 1, total: 1, phase: 'start' });
-  db = new PGlite({ loadDataDir: blob, parsers: raw });
+  db = new PGlite({ loadDataDir: blob, parsers: raw, ...(fsBundle ? { fsBundle } : {}) });
   await db.waitReady;
   await db.exec('SET search_path TO shop;');
 }
@@ -47,7 +62,7 @@ async function query(sql, schema) {
 onmessage = async (ev) => {
   const { id, type } = ev.data;
   try {
-    if (type === 'init') { await init(ev.data.url); postMessage({ id, ok: true }); return; }
+    if (type === 'init') { await init(ev.data.url, ev.data.fs); postMessage({ id, ok: true }); return; }
     if (type === 'query') { postMessage({ id, result: await query(ev.data.sql, ev.data.schema) }); return; }
   } catch (e) {
     postMessage({ id, fatal: String(e?.message || e) });

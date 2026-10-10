@@ -1,5 +1,7 @@
 const TIMEOUT_MS = 5000;
-const DATA_URL = new URL( './data/shop.tar.gz', document.baseURI).href;
+const OVERRIDE = globalThis.SQLQUEST_ASSETS || {};
+const DATA_URL = new URL(OVERRIDE.data || './data/shop.tar.gz', document.baseURI).href;
+const FS_URL = OVERRIDE.fs ? new URL(OVERRIDE.fs, document.baseURI).href : undefined;
 
 let worker = null;
 let ready = null;
@@ -43,12 +45,12 @@ function restart() {
   for (const [, p] of pending) { clearTimeout(p.timer); p.resolve({ error: { code: '57014', message: 'База перезапущена' } }); }
   pending.clear();
   spawn();
-  ready = call({ type: 'init', url: DATA_URL });
+  ready = call({ type: 'init', url: DATA_URL, fs: FS_URL });
 }
 
 export function initDb(progress) {
   if (progress) onProgress = progress;
-  if (!ready) { spawn(); ready = call({ type: 'init', url: DATA_URL }); }
+  if (!ready) { spawn(); ready = call({ type: 'init', url: DATA_URL, fs: FS_URL }); }
   return ready;
 }
 

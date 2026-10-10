@@ -21,7 +21,12 @@ export const taskIndex = {};
 for (const l of content.levels) for (const t of l.tasks) taskIndex[t.id] = { task: t, level: l };
 
 function readTheme() {
-  try { return localStorage.getItem('sqlquest.theme') || 'dark'; } catch { return 'dark'; }
+  let stored = null;
+  try { stored = localStorage.getItem('sqlquest.theme'); } catch { }
+  if (stored) return stored;
+  const preset = document.documentElement.dataset.theme;
+  if (preset === 'light' || preset === 'dark') return preset;
+  return typeof matchMedia === 'function' && matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
 }
 
 export default function App() {
