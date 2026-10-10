@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { reveal } from '../engine/canon.js';
-import { checkAttempt, execute } from '../game/check.js';
+import { checkAttempt, execute, executeScript, explainQuery, liveSpec } from '../game/check.js';
+import { describeSpec, fmt } from '../engine/plan.js';
+import PlanView from './PlanView.jsx';
 import { recordResult, isLevelUnlocked, isBossOpen, passwords, baseXp, levelStats } from '../game/progress.js';
 import Editor from './Editor.jsx';
 import ResultTable from './ResultTable.jsx';
@@ -80,14 +82,35 @@ export default function TaskView({ content, entry, progress, update, replace, db
                 ★★★ — {task.bonus?.text || 'с первой попытки и без подсказок'}
               </span>
             </div>
-            {task.expected && !['choose'].includes(task.type) && (
+            {task.expected && !['choose', 'write_dml'].includes(task.type) && (
               <div className="need-cols">
                 <span className="muted">Колонки результата{task.expected.check_names ? '' : ' (имена не проверяются)'}:</span>
                 <span className="chips">{task.expected.columns.map((c) => <code key={c}>{c}</code>)}</span>
                 {task.expected.ordered && <span className="muted">Порядок строк важен.</span>}
               </div>
             )}
+            {task.type === 'write_dml' && task.check === 'returning' && (
+              <div className="need-cols">
+                <span className="muted">Скрипт должен закончиться командой с RETURNING. Колонки:</span>
+                <span className="chips">{task.expected.columns.map((c) => <code key={c}>{c}</code>)}</span>
+              </div>
+            )}
+            {(task.type === 'optimize' || task.plan) && (
+              <div className="need-cols plan-req">
+                <span className="muted">{task.type === 'optimize' ? 'Результат должен остаться прежним, а план —' : 'После скрипта план этого запроса должен'}</span>
+                <ul>{describeSpec(task.plan).map((t, i) => <li key={i}>{t}</li>)}</ul>
+                {task.plan.max_cost_ratio ? <span className="muted">Стоимость сравнивается с исходным запросом на той же базе в момент проверки.</span> : null}
+              </div>
+            )}
           </article>
+
+          {task.type === 'write_dml' && (task.verify || task.plan?.probe) && (
+            <div className="verify-box">
+              <h3>{task.verify ? 'Проверочный запрос' : 'Запрос, план которого проверяется'}</h3>
+              <p className="muted">{task.verify ? 'Выполнится сразу после твоего скрипта, внутри той же транзакции. Затем всё откатится — база не изменится.' : 'После твоего скрипта игра посмотрит его план через EXPLAIN. Затем всё откатится.'}</p>
+              <Editor value={task.verify || task.plan.probe} readOnly minLines={2} ariaLabel="Проверочный запрос" />
+            </div>
+          )}
 
           {task.type === 'target_table' && (
             <div className="target">
@@ -152,8 +175,15 @@ function Workbench({ task, content, progress, update, dbReady, onSolved, onWrong
   const run = async () => {
     if (busy || !dbReady) return;
     setBusy('run');
-    const r = await execute(sql);
+    let r;
+    if (task.type === 'write_dml') r = { script: await executeScript(task, sql) };
+    else {
+      r = await execute(sql);
+      if (task.type === 'optimize' && r.rows) { const pl = await explainQuery(sql); const spec = await liveSpec(task); if (pl.plan) r.plan = { root: pl.plan, spec, baseline: spec.baseline }; }
+    }
     setBusy(null);
+    if (r.script?.blocked) r = { blocked: r.script.blocked };
+    else if (r.script?.error) r = { error: r.script.error };
     setOut({ kind: 'run', ...r });
   };
   const check = async () => {
@@ -171,10 +201,10 @@ function Workbench({ task, content, progress, update, dbReady, onSolved, onWrong
     <div className="workbench">
       <div className="editor-box">
         <div className="editor-bar">
-          <span className="muted">{task.type === 'fix_bug' ? 'Запрос с ошибкой — исправь его' : task.type === 'fill_blank' ? 'Заполни пропуски ___' : 'Твой запрос'}</span>
+          <span className="muted">{task.type === 'write_dml' ? (task.start_sql ? 'Скрипт с ошибкой — исправь его. Выполняется в транзакции и откатывается' : 'Твой скрипт — выполняется в транзакции и откатывается') : task.type === 'optimize' ? 'Медленный запрос — ускорь его' : task.type === 'fix_bug' ? 'Запрос с ошибкой — исправь его' : task.type === 'fill_blank' ? 'Заполни пропуски ___' : 'Твой запрос'}</span>
           <button className="link-btn" onClick={reset} title="Вернуть исходный текст">Сбросить</button>
         </div>
-        <Editor value={sql} onChange={change} onRun={run} onCheck={check} schema={content.schema} minLines={8} />
+        <Editor value={sql} onChange={change} onRun={run} onCheck={check} schema={content.schema} minLines={8} placeholder={task.type === 'write_dml' ? 'INSERT … / UPDATE … / DELETE … / CREATE INDEX …' : 'SELECT …'} />
       </div>
       <div className="actions">
         <button className="btn" onClick={run} disabled={!dbReady || !!busy} title="Ctrl + Enter">
@@ -190,11 +220,28 @@ function Workbench({ task, content, progress, update, dbReady, onSolved, onWrong
   );
 }
 
+function ScriptTables({ script, task }) {
+  if (!script) return null;
+  const changed = (script.affected || []).filter((x) => x != null).reduce((a, b) => a + b, 0);
+  return (
+    <>
+      <div className="run-meta">Команд выполнено: {script.affected?.length ?? 0}, строк изменено: {changed}, {script.ms} мс. После проверки всё откатилось.</div>
+      {script.last && <ResultTable caption="Последняя команда вернула" columns={script.last.columns} rows={script.last.rows} compact />}
+      {script.verify && <ResultTable caption="Проверочный запрос после скрипта" columns={script.verify.columns} rows={script.verify.rows} compact />}
+      {script.plan && <PlanView root={script.plan} spec={task.plan} caption="План проверяемого запроса после скрипта" />}
+    </>
+  );
+}
+
 function Output({ out, task, sql }) {
   if (!out) {
     return (
       <div className="output empty">
-        <p>«Выполнить» покажет результат запроса. «Проверить» сравнит его с ожидаемым — на видимых и на контрольных данных.</p>
+        <p>{task.type === 'write_dml'
+          ? '«Выполнить» запустит скрипт, покажет, что он вернул и что видит проверочный запрос, а затем откатит изменения. «Проверить» сделает то же на видимых и на контрольных данных.'
+          : task.type === 'optimize'
+            ? '«Выполнить» покажет результат и план запроса со стоимостью. «Проверить» сравнит результат с ожидаемым и проверит план.'
+            : '«Выполнить» покажет результат запроса. «Проверить» сравнит его с ожидаемым — на видимых и на контрольных данных.'}</p>
       </div>
     );
   }
@@ -214,9 +261,11 @@ function Output({ out, task, sql }) {
   }
   const res = out.result || out;
   if (out.kind === 'run') {
+    if (out.script) return <div className="output"><ScriptTables script={out.script} task={task} /></div>;
     return (
       <div className="output">
         <div className="run-meta">{res.rows.length} {rowsWord(res.rows.length)}, {res.ms} мс</div>
+        {out.plan && <PlanView root={out.plan.root} spec={out.plan.spec || task.plan} baseline={out.plan.baseline} />}
         <ResultTable columns={res.columns} rows={res.rows} />
       </div>
     );
@@ -224,8 +273,9 @@ function Output({ out, task, sql }) {
   if (out.status === 'ok') {
     return (
       <div className="output">
-        <div className="verdict ok" role="status"><b>Верно.</b> Результат совпал на видимых и на контрольных данных.</div>
-        <ResultTable columns={res.columns} rows={res.rows} />
+        <div className="verdict ok" role="status"><b>Верно.</b> {task.type === 'write_dml' ? (task.check === 'plan' ? 'План запроса стал таким, как нужно.' : 'Состояние данных после скрипта совпало на видимых и на контрольных данных.') : task.type === 'optimize' ? 'Результат прежний, план — нужный.' : 'Результат совпал на видимых и на контрольных данных.'}</div>
+        {out.plan && <PlanView root={out.plan.root} spec={out.plan.spec || task.plan} baseline={out.plan.baseline} />}
+        {out.script ? <ScriptTables script={out.script} task={task} /> : res?.rows && <ResultTable columns={res.columns} rows={res.rows} />}
       </div>
     );
   }
@@ -236,16 +286,20 @@ function Output({ out, task, sql }) {
         <b>Пока не то.</b> <span>{v.message}</span>
         {out.detectors?.length > 0 && <Detectors list={out.detectors} />}
       </div>
+      {out.plan && <PlanView root={out.plan.root} spec={out.plan.spec || task.plan} baseline={out.plan.baseline} />}
       {(v.extra?.length > 0 || v.missing?.length > 0) && (
         <div className="diff">
           {v.missing?.length > 0 && <ResultTable caption={`Не хватает строк: ${v.missingTotal}${v.missingTotal > v.missing.length ? ' (показаны первые 20)' : ''}`} columns={task.expected.columns} rows={v.missing} mark="miss" compact />}
-          {v.extra?.length > 0 && <ResultTable caption={`Лишние строки: ${v.extraTotal}${v.extraTotal > v.extra.length ? ' (показаны первые 20)' : ''}`} columns={res.columns} rows={v.extra} mark="extra" compact />}
+          {v.extra?.length > 0 && <ResultTable caption={`Лишние строки: ${v.extraTotal}${v.extraTotal > v.extra.length ? ' (показаны первые 20)' : ''}`} columns={out.result?.columns || task.expected.columns} rows={v.extra} mark="extra" compact />}
         </div>
       )}
-      <details className="your-result">
-        <summary>Твой результат: {res.rows.length} {rowsWord(res.rows.length)}</summary>
-        <ResultTable columns={res.columns} rows={res.rows} compact />
-      </details>
+      {out.script && <ScriptTables script={out.script} task={task} />}
+      {!out.script && out.result?.rows && (
+        <details className="your-result">
+          <summary>Твой результат: {out.result.rows.length} {rowsWord(out.result.rows.length)}</summary>
+          <ResultTable columns={out.result.columns} rows={out.result.rows} compact />
+        </details>
+      )}
     </div>
   );
 }

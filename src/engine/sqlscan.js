@@ -42,7 +42,16 @@ export function features(sql) {
     if (w === 'filter' && nx === '(') f.add('filter');
     if (w === 'in' && nx === '(') f.add('in');
   }
-  for (const w of ['having', 'limit', 'offset', 'distinct', 'where', 'case', 'between', 'like', 'ilike', 'union', 'intersect', 'except', 'coalesce']) if (has(w)) f.add(w);
+  for (let i = 0; i < t.length; i++) {
+    const w = t[i], nx = t[i + 1];
+    if (w === 'exists' && nx === '(') f.add('exists');
+    if (w === 'on' && nx === 'conflict') f.add('on_conflict');
+    if ((w === 'any' || w === 'all' || w === 'some') && nx === '(') f.add('any_all');
+    if (w === 'within' && nx === 'group') f.add('within_group');
+    if (w === 'rollup' || w === 'cube' || (w === 'grouping' && nx === 'sets')) f.add('grouping_sets');
+    if (w === 'create' && (nx === 'index' || (nx === 'unique' && t[i + 2] === 'index'))) f.add('create_index');
+  }
+  for (const w of ['having', 'limit', 'offset', 'distinct', 'where', 'case', 'between', 'like', 'ilike', 'union', 'intersect', 'except', 'coalesce', 'recursive', 'returning', 'insert', 'update', 'delete', 'lag', 'lead', 'ntile', 'first_value', 'last_value', 'row_number', 'rank', 'dense_rank', 'rows', 'range']) if (has(w)) f.add(w);
   if (t[0] === 'with') f.add('cte');
   if (f.has('ilike')) f.add('like');
   return f;
@@ -52,12 +61,32 @@ export const FEATURE_NAMES = {
   join: 'JOIN', left_join: 'LEFT JOIN', group_by: 'GROUP BY', order_by: 'ORDER BY', window: 'оконную функцию (OVER)',
   subquery: 'подзапрос', filter: 'FILTER', in: 'IN', having: 'HAVING', limit: 'LIMIT', distinct: 'DISTINCT', where: 'WHERE',
   case: 'CASE', between: 'BETWEEN', like: 'LIKE/ILIKE', union: 'UNION', cte: 'WITH (CTE)', cross_join: 'CROSS JOIN',
+  exists: 'EXISTS', on_conflict: 'ON CONFLICT', any_all: 'ANY / ALL', within_group: 'WITHIN GROUP', grouping_sets: 'ROLLUP / CUBE / GROUPING SETS',
+  create_index: 'CREATE INDEX', recursive: 'WITH RECURSIVE', returning: 'RETURNING', insert: 'INSERT', update: 'UPDATE', delete: 'DELETE',
+  lag: 'LAG', lead: 'LEAD', ntile: 'NTILE', first_value: 'FIRST_VALUE', last_value: 'LAST_VALUE', row_number: 'ROW_NUMBER', rank: 'RANK', dense_rank: 'DENSE_RANK',
+  rows: 'рамку ROWS', range: 'рамку RANGE', intersect: 'INTERSECT', except: 'EXCEPT',
 };
 
-export function guard(sql) {
+const TX_WORDS = new Set(['begin', 'start', 'commit', 'end', 'rollback', 'abort', 'prepare', 'copy', 'vacuum', 'checkpoint', 'load', 'discard', 'listen', 'notify', 'release']);
+
+export function statements(sql) {
+  return stripSql(sql).split(';').map((x) => x.trim()).filter(Boolean);
+}
+
+export function guard(sql, mode = 'read') {
   const stripped = stripSql(sql).trim();
-  if (!stripped) return 'Запрос пуст — напиши SELECT.';
+  if (!stripped) return mode === 'write' ? 'Скрипт пуст — напиши команду.' : 'Запрос пуст — напиши SELECT.';
   const t = tokens(sql);
+  if (mode === 'write') {
+    if (/(^|[^a-z_])shop_h([^a-z_]|$)/i.test(stripped)) return 'Эта схема служебная и недоступна в заданиях.';
+    if (stripped.includes('___')) return 'В скрипте остались пропуски ___ — заполни их.';
+    for (const st of statements(sql)) {
+      const first = (tokens(st)[0] || '');
+      if (TX_WORDS.has(first)) return `Команду ${first.toUpperCase()} здесь использовать нельзя: игра сама открывает транзакцию перед твоим скриптом и откатывает её после проверки.`;
+    }
+    if (statements(sql).length > 12) return 'Слишком много команд в одном скрипте — уложись в 12.';
+    return null;
+  }
   const body = t.filter((x) => x !== ';');
   const semis = t.filter((x) => x === ';').length;
   if (semis > 1 || (semis === 1 && t[t.length - 1] !== ';')) return 'В одной попытке можно выполнить только один запрос. Убери лишнюю точку с запятой.';

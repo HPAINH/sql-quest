@@ -1,0 +1,457 @@
+level: 6
+grade: Middle
+title: CTE и рекурсия
+tag: WITH
+book_chapter: 8
+summary: Раскладываем сложный запрос на именованные шаги, генерируем календари и обходим деревья категорий и оргструктуры.
+theory: |
+  **CTE** (Common Table Expression) — именованный подзапрос, объявленный перед основным запросом:
+
+  ```sql
+  WITH delivered AS (
+    SELECT customer_id, SUM(amount) AS total
+    FROM orders
+    WHERE status = 'delivered'
+    GROUP BY customer_id
+  )
+  SELECT c.city, AVG(d.total)
+  FROM delivered AS d
+  JOIN customers AS c USING (customer_id)
+  GROUP BY c.city;
+  ```
+
+  CTE можно объявить несколько через запятую, и каждый следующий может ссылаться на предыдущие. Запрос читается сверху вниз как цепочка шагов, а один CTE можно использовать несколько раз.
+
+  **Рекурсивный CTE** строится из двух частей, соединённых `UNION ALL`:
+
+  ```sql
+  WITH RECURSIVE tree AS (
+    SELECT category_id, name, 0 AS depth      -- стартовая часть: корни
+    FROM categories WHERE parent_id IS NULL
+    UNION ALL
+    SELECT c.category_id, c.name, t.depth + 1 -- рекурсивная часть: дети найденных
+    FROM categories AS c
+    JOIN tree AS t ON c.parent_id = t.category_id
+  )
+  SELECT * FROM tree;
+  ```
+
+  PostgreSQL выполняет стартовую часть, затем снова и снова рекурсивную — каждый раз на строках, найденных на предыдущем шаге, — пока новые строки не перестанут появляться. Условие остановки обязательно: без него рекурсия бесконечна.
+
+  **Календарь** без пропусков удобно строить через `generate_series('2026-06-01'::date, '2026-06-30', interval '1 day')` и присоединять к нему данные через LEFT JOIN — так дни без событий получат 0, а не пропадут.
+
+  Сохраняйте путь в строке (`path || ' > ' || name`) или в массиве, чтобы видеть, как вы пришли к узлу.
+tasks:
+  - id: L06-01
+    type: write_query
+    difficulty: 2
+    customer: Финансы
+    title: Месяц против года
+    ticket: |
+      Средний чек доставленных заказов по месяцам 2026 года и его отклонение от среднего чека за весь 2026 год.
+      Колонки month (date), avg_check и diff (avg_check − средний за год), всё с округлением до копеек, по месяцам.
+    tables: [orders]
+    expected_columns: [month, avg_check, diff]
+    check_column_names: true
+    ordered: true
+    required: [cte]
+    reference: |
+      WITH d AS (
+        SELECT created_at, amount FROM orders
+        WHERE status = 'delivered' AND created_at >= '2026-01-01'
+      ),
+      overall AS (SELECT AVG(amount) AS avg_all FROM d)
+      SELECT date_trunc('month', d.created_at)::date AS month,
+             round(AVG(d.amount), 2) AS avg_check,
+             round(AVG(d.amount) - (SELECT avg_all FROM overall), 2) AS diff
+      FROM d
+      GROUP BY month
+      ORDER BY month;
+    hints:
+      - Одни и те же заказы нужны дважды — для помесячного и для годового среднего. Выдели их в CTE.
+      - "CTE d — доставленные заказы 2026 года. CTE overall — их общий средний чек."
+      - "1) WITH d AS (…). 2) overall AS (SELECT AVG(amount) FROM d). 3) Основной запрос: группировка d по месяцу и разница со средним из overall."
+      - "WITH d AS (SELECT created_at, amount FROM orders WHERE status = 'delivered' AND created_at >= '2026-01-01'), overall AS (SELECT AVG(amount) AS avg_all FROM d) SELECT …, round(AVG(d.amount) - (SELECT avg_all FROM ___), 2) AS diff FROM d GROUP BY month ORDER BY month;"
+      - "CTE избавляет от копирования одного фильтра в двух местах: условие записано один раз, а d используется и для месяцев, и для года. Округлять лучше разницу, а не уже округлённые слагаемые."
+
+  - id: L06-02
+    type: write_query
+    difficulty: 2
+    customer: CRM
+    title: Пятёрка лучших
+    ticket: Пять клиентов с наибольшей суммой доставленных заказов за 2025 год — customer_id, city и total, по убыванию total.
+    tables: [orders, customers]
+    expected_columns: [customer_id, city, total]
+    check_column_names: true
+    ordered: true
+    order_keys: [total]
+    required: [cte]
+    reference: |
+      WITH totals AS (
+        SELECT customer_id, SUM(amount) AS total
+        FROM orders
+        WHERE status = 'delivered' AND created_at >= '2025-01-01' AND created_at < '2026-01-01'
+        GROUP BY customer_id
+      ),
+      top5 AS (
+        SELECT * FROM totals ORDER BY total DESC LIMIT 5
+      )
+      SELECT t.customer_id, c.city, t.total
+      FROM top5 AS t
+      JOIN customers AS c ON c.customer_id = t.customer_id
+      ORDER BY t.total DESC;
+    hints:
+      - Посчитай суммы, отбери пятёрку, и только потом добавь город.
+      - "Цепочка из двух CTE: totals → top5, затем JOIN с customers."
+      - "1) totals: SUM(amount) по клиентам за 2025 год. 2) top5: ORDER BY total DESC LIMIT 5. 3) JOIN с customers ради city."
+      - "WITH totals AS (…), top5 AS (SELECT * FROM totals ORDER BY total DESC LIMIT ___) SELECT t.customer_id, c.city, t.total FROM top5 AS t JOIN customers AS c ON … ORDER BY t.total DESC;"
+      - "Каждый CTE — шаг с понятным именем. ORDER BY внутри top5 нужен для LIMIT, а итоговый ORDER BY — для порядка в отчёте: порядок строк CTE наружу не передаётся."
+
+  - id: L06-03
+    type: write_query
+    difficulty: 2
+    customer: Финансы
+    title: Доли способов оплаты
+    ticket: Какую долю всех поступивших денег приносит каждый способ оплаты? method, total, share_pct (процент от общей суммы, 1 знак).
+    tables: [payments]
+    expected_columns: [method, total, share_pct]
+    check_column_names: true
+    required: [cte]
+    reference: |
+      WITH by_method AS (
+        SELECT method, SUM(amount) AS total FROM payments GROUP BY method
+      )
+      SELECT method, total,
+             round(100 * total / (SELECT SUM(total) FROM by_method), 1) AS share_pct
+      FROM by_method;
+    hints:
+      - Для доли нужна общая сумма — её можно получить из того же промежуточного результата.
+      - "CTE by_method с суммами по способам, а общая сумма — SUM(total) по нему же."
+      - "1) by_method: GROUP BY method. 2) Снаружи: total и total / (SELECT SUM(total) FROM by_method) × 100."
+      - "round(100 * total / (SELECT SUM(total) FROM ___), 1) AS share_pct"
+      - "CTE используется дважды: построчно и для общей суммы. Без CTE пришлось бы второй раз сканировать payments."
+
+  - id: L06-04
+    type: write_query
+    difficulty: 2
+    customer: Качество
+    title: Календарь отзывов
+    ticket: Сколько отзывов оставили в каждый день мая 2026 года? Нужны все 31 день, включая дни без отзывов (0). Колонки day (date) и reviews_cnt.
+    tables: [reviews]
+    expected_columns: [day, reviews_cnt]
+    check_column_names: true
+    ordered: true
+    reference: |
+      WITH days AS (
+        SELECT d::date AS day FROM generate_series('2026-05-01'::date, '2026-05-31'::date, interval '1 day') AS d
+      )
+      SELECT days.day, COUNT(r.review_id) AS reviews_cnt
+      FROM days
+      LEFT JOIN reviews AS r ON r.created_at::date = days.day
+      GROUP BY days.day
+      ORDER BY days.day;
+    common_mistakes:
+      - result: rows_less
+        explain: "Не хватает дней. Если группировать сами отзывы, дни без отзывов пропадут. Построй календарь и присоедини к нему отзывы через LEFT JOIN."
+    hints:
+      - Дней без отзывов нет в таблице reviews — их нужно создать.
+      - "generate_series(начало, конец, interval '1 day') выдаёт все дни; LEFT JOIN reviews сохранит пустые."
+      - "1) CTE days с 31 датой. 2) LEFT JOIN reviews по дате. 3) COUNT(r.review_id) по дню."
+      - "FROM days LEFT JOIN reviews AS r ON r.created_at::date = days.day GROUP BY days.day"
+      - "Календарь задаёт полный набор строк, LEFT JOIN подвешивает к нему данные, а COUNT колонки правой таблицы даёт 0 там, где пары нет. Тот же календарь можно построить рекурсивным CTE."
+
+  - id: L06-05
+    type: write_query
+    difficulty: 3
+    customer: HR
+    title: Вся команда аналитики
+    ticket: Все подчинённые руководителя направления «Аналитика» на любом уровне — employee_id, full_name и level (1 — прямые подчинённые, 2 — их подчинённые и т. д.). Сам руководитель не нужен.
+    tables: [employees]
+    expected_columns: [employee_id, full_name, level]
+    check_column_names: true
+    required: [recursive]
+    reference: |
+      WITH RECURSIVE team AS (
+        SELECT employee_id, full_name, 1 AS level
+        FROM employees
+        WHERE manager_id = (SELECT employee_id FROM employees WHERE department = 'Аналитика' AND position = 'Руководитель направления')
+        UNION ALL
+        SELECT e.employee_id, e.full_name, t.level + 1
+        FROM employees AS e
+        JOIN team AS t ON e.manager_id = t.employee_id
+      )
+      SELECT employee_id, full_name, level FROM team;
+    hints:
+      - Глубина иерархии заранее неизвестна — нужен рекурсивный обход.
+      - "Стартовая часть — прямые подчинённые руководителя; рекурсивная — подчинённые уже найденных."
+      - "1) Найди id руководителя подзапросом. 2) Стартовая часть: manager_id = этот id, level = 1. 3) UNION ALL: employees JOIN team по manager_id, level + 1."
+      - "WITH RECURSIVE team AS (SELECT employee_id, full_name, 1 AS level FROM employees WHERE manager_id = (…) UNION ALL SELECT e.employee_id, e.full_name, t.level + 1 FROM employees AS e JOIN team AS t ON e.manager_id = ___) SELECT * FROM team;"
+      - "Рекурсия начинает с прямых подчинённых и на каждом шаге добавляет следующий уровень, пока подчинённые не закончатся. Руководителя нет в результате, потому что стартовая часть начинается уровнем ниже."
+
+  - id: L06-06
+    type: write_query
+    difficulty: 3
+    customer: Каталог
+    title: Хлебные крошки
+    ticket: Для каждой категории постройте путь от корня — category_id и path вида «Электроника > Смартфоны > Игровые смартфоны». Сортировка по category_id.
+    tables: [categories]
+    expected_columns: [category_id, path]
+    check_column_names: true
+    ordered: true
+    required: [recursive]
+    reference: |
+      WITH RECURSIVE tree AS (
+        SELECT category_id, name::text AS path
+        FROM categories WHERE parent_id IS NULL
+        UNION ALL
+        SELECT c.category_id, t.path || ' > ' || c.name
+        FROM categories AS c
+        JOIN tree AS t ON c.parent_id = t.category_id
+      )
+      SELECT category_id, path FROM tree ORDER BY category_id;
+    hints:
+      - Путь копится от корня к листу — каждый шаг рекурсии дописывает одно имя.
+      - "Стартовая часть: корни (parent_id IS NULL), path = name. Рекурсивная: path || ' > ' || имя ребёнка."
+      - "1) Корни. 2) UNION ALL: дети найденных, путь родителя плюс своё имя. 3) Сортировка."
+      - "SELECT c.category_id, t.path || ' > ' || c.name FROM categories AS c JOIN tree AS t ON c.parent_id = ___"
+      - "Каждая строка рекурсии наследует путь родителя. Приведение name::text в стартовой части выравнивает тип с рекурсивной частью — иначе PostgreSQL может пожаловаться на несовпадение типов."
+
+  - id: L06-07
+    type: write_query
+    difficulty: 2
+    customer: HR
+    title: Глубина в оргструктуре
+    ticket: На каком уровне от генерального директора находится каждый сотрудник? employee_id и depth (у директора 0).
+    tables: [employees]
+    expected_columns: [employee_id, depth]
+    check_column_names: true
+    required: [recursive]
+    reference: |
+      WITH RECURSIVE org AS (
+        SELECT employee_id, 0 AS depth FROM employees WHERE manager_id IS NULL
+        UNION ALL
+        SELECT e.employee_id, o.depth + 1
+        FROM employees AS e JOIN org AS o ON e.manager_id = o.employee_id
+      )
+      SELECT employee_id, depth FROM org;
+    hints:
+      - Старт — сотрудник без руководителя, дальше вниз по связям manager_id.
+      - "Стартовая часть: manager_id IS NULL, depth 0."
+      - "1) Директор с depth 0. 2) Подчинённые найденных с depth + 1."
+      - "SELECT e.employee_id, o.depth + 1 FROM employees AS e JOIN org AS o ON e.manager_id = o.___"
+      - "Глубина узла — число шагов рекурсии от корня. Так же считают уровень вложенности категорий или длину цепочки рефералов."
+
+  - id: L06-08
+    type: write_query
+    difficulty: 2
+    customer: Маркетинг
+    title: Новички 2026 года
+    ticket: Клиенты, чей самый первый заказ сделан в 2026 году, — customer_id, first_order (дата и время первого заказа) и orders_cnt (сколько всего у них заказов).
+    tables: [orders]
+    expected_columns: [customer_id, first_order, orders_cnt]
+    check_column_names: true
+    required: [cte]
+    reference: |
+      WITH firsts AS (
+        SELECT customer_id, MIN(created_at) AS first_order, COUNT(*) AS orders_cnt
+        FROM orders
+        GROUP BY customer_id
+      )
+      SELECT customer_id, first_order, orders_cnt
+      FROM firsts
+      WHERE first_order >= '2026-01-01';
+    common_mistakes:
+      - result: rows_more
+        explain: "Строк больше, чем нужно. Если сначала оставить заказы 2026 года, в результат попадут и старые клиенты. Ищи первый заказ по всей истории, а фильтруй потом."
+    hints:
+      - Сначала найди первый заказ каждого клиента по всей истории, потом фильтруй.
+      - "CTE с MIN(created_at) и COUNT(*) по customer_id, без фильтра по дате."
+      - "1) CTE firsts. 2) Снаружи — WHERE first_order >= '2026-01-01'."
+      - "WITH firsts AS (SELECT customer_id, MIN(created_at) AS first_order, COUNT(*) AS orders_cnt FROM orders GROUP BY customer_id) SELECT * FROM firsts WHERE first_order >= ___;"
+      - "Порядок шагов решает всё: фильтр по 2026 году до группировки сделал бы «первым» первый заказ 2026 года даже у давних клиентов."
+
+  - id: L06-09
+    type: fix_bug
+    difficulty: 2
+    customer: Каталог
+    title: Дерево не растёт
+    ticket: Запрос должен вывести все категории с их глубиной (у корня 0) — category_id, name, depth. Он падает с ошибкой «таблица не существует». Почините.
+    tables: [categories]
+    expected_columns: [category_id, name, depth]
+    broken_query: |
+      WITH tree AS (
+        SELECT category_id, name, 0 AS depth
+        FROM categories WHERE parent_id IS NULL
+        UNION ALL
+        SELECT c.category_id, c.name, t.depth + 1
+        FROM categories AS c
+        JOIN tree AS t ON c.parent_id = t.category_id
+      )
+      SELECT category_id, name, depth FROM tree;
+    reference: |
+      WITH RECURSIVE tree AS (
+        SELECT category_id, name, 0 AS depth
+        FROM categories WHERE parent_id IS NULL
+        UNION ALL
+        SELECT c.category_id, c.name, t.depth + 1
+        FROM categories AS c
+        JOIN tree AS t ON c.parent_id = t.category_id
+      )
+      SELECT category_id, name, depth FROM tree;
+    hints:
+      - CTE ссылается сам на себя, а СУБД об этом не предупредили.
+      - "Обычный WITH не видит собственное имя внутри себя."
+      - "1) Найди начало WITH. 2) Добавь ключевое слово, разрешающее самоссылку."
+      - "WITH ___ tree AS (…)"
+      - "Самоссылка в CTE разрешена только с WITH RECURSIVE. Без этого слова PostgreSQL ищет внутри CTE обычную таблицу tree и не находит её."
+
+  - id: L06-10
+    type: fix_bug
+    difficulty: 2
+    customer: HR
+    title: Лишний в команде
+    ticket: Нужны все подчинённые руководителя направления «Логистика» на любом уровне — employee_id и full_name, без самого руководителя. Запрос включает и его. Почините.
+    tables: [employees]
+    expected_columns: [employee_id, full_name]
+    broken_query: |
+      WITH RECURSIVE team AS (
+        SELECT employee_id, full_name
+        FROM employees
+        WHERE department = 'Логистика' AND position = 'Руководитель направления'
+        UNION ALL
+        SELECT e.employee_id, e.full_name
+        FROM employees AS e JOIN team AS t ON e.manager_id = t.employee_id
+      )
+      SELECT employee_id, full_name FROM team;
+    reference: |
+      WITH RECURSIVE team AS (
+        SELECT employee_id, full_name, 0 AS lvl
+        FROM employees
+        WHERE department = 'Логистика' AND position = 'Руководитель направления'
+        UNION ALL
+        SELECT e.employee_id, e.full_name, t.lvl + 1
+        FROM employees AS e JOIN team AS t ON e.manager_id = t.employee_id
+      )
+      SELECT employee_id, full_name FROM team WHERE lvl > 0;
+    hints:
+      - Стартовая часть рекурсии сама попадает в результат.
+      - "Можно начать на уровень ниже или отметить уровень и отфильтровать его снаружи."
+      - "1) Добавь в CTE колонку уровня. 2) Во внешнем запросе отбрось уровень 0."
+      - "… SELECT employee_id, full_name FROM team WHERE lvl ___ 0;"
+      - "Результат рекурсивного CTE — это стартовые строки плюс всё найденное. Раз руководитель — старт, он в результате. Решения: стартовать с его прямых подчинённых или хранить уровень и фильтровать."
+
+  - id: L06-11
+    type: predict
+    difficulty: 2
+    customer: Обучение
+    title: Удвоение
+    ticket: Сколько строк вернёт запрос?
+    tables: []
+    query: |
+      WITH RECURSIVE t(n) AS (
+        SELECT 1
+        UNION ALL
+        SELECT n * 2 FROM t WHERE n < 100
+      )
+      SELECT n FROM t;
+    ask: rows
+    distractor_values: [7, 100, 6]
+    hints:
+      - Выпиши значения по шагам.
+      - "Каждый шаг берёт строки предыдущего и удваивает их, пока n < 100."
+      - "1) Старт: 1. 2) Дальше 2, 4, 8 … 3) Последний шаг применяется к строке, где n ещё меньше 100."
+      - "1, 2, 4, 8, 16, 32, 64, ___"
+      - "Условие n < 100 проверяется у строки предыдущего шага: 64 < 100, поэтому появляется 128. Дальше 128 условие не проходит, и рекурсия останавливается — всего 8 строк."
+
+  - id: L06-12
+    type: choose
+    difficulty: 3
+    customer: Обучение
+    title: Дни без отмен
+    ticket: Нужно число отменённых заказов в каждый день июня 2026 года, включая дни без отмен (0). Какие запросы верны? Отметьте все.
+    tables: [orders]
+    expected_columns: [day, cancelled]
+    ordered: true
+    reference: |
+      SELECT d::date AS day, COUNT(o.order_id) AS cancelled FROM generate_series('2026-06-01'::date, '2026-06-30'::date, interval '1 day') AS d LEFT JOIN orders o ON o.created_at::date = d::date AND o.status = 'cancelled' GROUP BY day ORDER BY day;
+    options:
+      - SELECT d::date AS day, COUNT(o.order_id) AS cancelled FROM generate_series('2026-06-01'::date, '2026-06-30'::date, interval '1 day') AS d LEFT JOIN orders o ON o.created_at::date = d::date AND o.status = 'cancelled' GROUP BY day ORDER BY day;
+      - SELECT created_at::date AS day, COUNT(*) AS cancelled FROM orders WHERE status = 'cancelled' AND created_at >= '2026-06-01' AND created_at < '2026-07-01' GROUP BY day ORDER BY day;
+      - SELECT d::date AS day, COUNT(o.order_id) AS cancelled FROM generate_series('2026-06-01'::date, '2026-06-30'::date, interval '1 day') AS d LEFT JOIN orders o ON o.created_at::date = d::date WHERE o.status = 'cancelled' GROUP BY day ORDER BY day;
+      - WITH RECURSIVE days(day) AS (SELECT '2026-06-01'::date UNION ALL SELECT day + 1 FROM days WHERE day < '2026-06-30') SELECT days.day, COUNT(o.order_id) AS cancelled FROM days LEFT JOIN orders o ON o.created_at::date = days.day AND o.status = 'cancelled' GROUP BY days.day ORDER BY days.day;
+    expect_correct: [0, 3]
+    hints:
+      - Проверь, что каждый вариант делает с днём, в который отмен не было.
+      - "Группировка самих заказов не может породить день, которого нет в данных."
+      - "Условие на правую таблицу в WHERE отбрасывает строки-заглушки LEFT JOIN."
+      - Календарь можно построить и generate_series, и рекурсией.
+      - "Верны оба варианта с календарём, у которых условие на статус стоит в ON. Группировка заказов теряет пустые дни, а фильтр статуса в WHERE превращает LEFT JOIN во внутренний."
+
+  - id: L06-13
+    type: target_table
+    difficulty: 2
+    customer: Каталог
+    title: Ярусы каталога
+    ticket: Получите таблицу как на образце — категории с глубиной вложенности (у корня 0), сначала по глубине, внутри — по названию.
+    tables: [categories]
+    expected_columns: [name, depth]
+    ordered: true
+    order_keys: [depth, name]
+    required: [recursive]
+    reference: |
+      WITH RECURSIVE tree AS (
+        SELECT category_id, name, 0 AS depth FROM categories WHERE parent_id IS NULL
+        UNION ALL
+        SELECT c.category_id, c.name, t.depth + 1
+        FROM categories AS c JOIN tree AS t ON c.parent_id = t.category_id
+      )
+      SELECT name, depth FROM tree ORDER BY depth, name;
+    hints:
+      - Глубину считает рекурсия, а сортировка — по двум колонкам.
+      - "Стартовая часть — корни с depth 0."
+      - "1) Рекурсивный CTE с глубиной. 2) Снаружи — name, depth. 3) ORDER BY depth, name."
+      - "… SELECT name, depth FROM tree ORDER BY ___, name;"
+      - "Глубина растёт на единицу на каждом шаге рекурсии; у «Игровых смартфонов» она равна 2."
+
+  - id: L06-14
+    type: write_query
+    boss: true
+    difficulty: 3
+    customer: Руководство
+    title: "Инцидент: выручка поддеревьев"
+    ticket: |
+      Отчёт по категориям считает выручку только по товарам, лежащим прямо в категории, поэтому у «Электроники» почти ноль. Пересчитайте: для каждой категории — выручка её собственных товаров и всех вложенных подкатегорий любой глубины.
+      Колонки: category_id, name, subtree_revenue (сумма quantity × price позиций доставленных заказов, 0 если продаж нет). Сортировка по subtree_revenue по убыванию.
+    tables: [categories, products, order_items, orders]
+    expected_columns: [category_id, name, subtree_revenue]
+    check_column_names: true
+    ordered: true
+    order_keys: [subtree_revenue]
+    required: [recursive]
+    reference: |
+      WITH RECURSIVE anc AS (
+        SELECT category_id, category_id AS ancestor_id FROM categories
+        UNION ALL
+        SELECT a.category_id, c.parent_id
+        FROM anc AS a JOIN categories AS c ON c.category_id = a.ancestor_id
+        WHERE c.parent_id IS NOT NULL
+      ),
+      sales AS (
+        SELECT p.category_id, SUM(oi.quantity * oi.price) AS revenue
+        FROM order_items AS oi
+        JOIN orders AS o ON o.order_id = oi.order_id AND o.status = 'delivered'
+        JOIN products AS p ON p.product_id = oi.product_id
+        GROUP BY p.category_id
+      )
+      SELECT c.category_id, c.name, COALESCE(SUM(s.revenue), 0) AS subtree_revenue
+      FROM categories AS c
+      LEFT JOIN anc AS a ON a.ancestor_id = c.category_id
+      LEFT JOIN sales AS s ON s.category_id = a.category_id
+      GROUP BY c.category_id, c.name
+      ORDER BY subtree_revenue DESC;
+    hints:
+      - "Удобно построить пары «категория — каждый её предок, включая её саму». Тогда выручку категории-листа можно приписать всем её предкам."
+      - "Рекурсивный CTE anc: старт — (category_id, category_id); шаг — заменить предка на его родителя. Выручку по категориям посчитай отдельным CTE."
+      - "1) anc: все пары потомок–предок. 2) sales: выручка delivered по category_id. 3) categories LEFT JOIN anc по ancestor_id, LEFT JOIN sales по потомку. 4) SUM, COALESCE, сортировка."
+      - "WITH RECURSIVE anc AS (SELECT category_id, category_id AS ancestor_id FROM categories UNION ALL SELECT a.category_id, c.parent_id FROM anc AS a JOIN categories AS c ON c.category_id = a.ancestor_id WHERE c.parent_id IS NOT NULL), sales AS (…) SELECT c.category_id, c.name, COALESCE(SUM(s.revenue), 0) AS subtree_revenue FROM categories c LEFT JOIN anc a ON a.ancestor_id = c.category_id LEFT JOIN sales s ON s.category_id = a.category_id GROUP BY c.category_id, c.name ORDER BY subtree_revenue DESC;"
+      - "Таблица «потомок — предок» (замыкание дерева) превращает задачу про иерархию в обычный JOIN: выручка каждой категории суммируется для всех её предков. Выручку лучше агрегировать до соединения, чтобы не размножить строки."

@@ -265,7 +265,7 @@ export function generate(seed = 1, scale = 1) {
     }
   }
   const POS = { Продажи: 'Менеджер по продажам', Маркетинг: 'Маркетолог', Логистика: 'Логист', Аналитика: 'Аналитик данных', Поддержка: 'Специалист поддержки' };
-  while (eid <= 60) {
+  while (eid <= (hidden ? 66 : 60)) {
     const d = pick(DEPTS);
     const hired = U(2020, 1, 1) + int(0, 2350) * DAY;
     employees.rows.push([eid++, person(), pick(leads[d]), d, (chance(0.25) ? 'Старший ' + POS[d].charAt(0).toLowerCase() + POS[d].slice(1) : POS[d]), dt(hired), int(8, 19) * 10000]);
@@ -290,14 +290,43 @@ export function generate(seed = 1, scale = 1) {
     const pid = pick(sellable)[0];
     const steps = ['view', 'add_to_cart', 'checkout', 'purchase'];
     const depth = wpick([[1, 55], [2, 22], [3, 10], [4, 13]]);
+    const device = pick(['mobile', 'mobile', 'desktop', 'tablet']);
     for (let k = 0; k < depth; k++) {
       t += int(5, 600) * 1000;
-      events.rows.push([evId++, c[0], sess, steps[k], ts(t), JSON.stringify({ product_id: pid, device: pick(['mobile', 'mobile', 'desktop', 'tablet']) })]);
+      events.rows.push([evId++, c[0], sess, steps[k], ts(t), JSON.stringify({ product_id: pid, device })]);
     }
     sess++;
   }
   const ab = table('ab_assignments', ['customer_id', 'experiment', 'variant', 'assigned_at']);
   for (const c of customers.rows) if (chance(0.5)) ab.rows.push([c[0], 'new_checkout', chance(0.5) ? 'A' : 'B', ts(U(2026, 3, 1) + int(0, 86 * 86400) * 1000)]);
+
+  const rnd2 = mulberry32(seed * 104729 + 7);
+  const byOrder = new Map();
+  for (const p of payments.rows) byOrder.set(p[1], (byOrder.get(p[1]) || 0) + 1);
+  const singles = [...byOrder].filter(([, n]) => n === 1).map(([o]) => o);
+  const lost = new Set();
+  while (lost.size < Math.round(singles.length * 0.01)) lost.add(singles[Math.floor(rnd2() * singles.length)]);
+  payments.rows = payments.rows.filter((p) => !lost.has(p[1]));
+  let maxPay = payments.rows.reduce((m, p) => Math.max(m, p[0]), 0);
+  const kept = payments.rows.filter((p) => byOrder.get(p[1]) === 1);
+  const doubled = new Set();
+  while (doubled.size < Math.round(kept.length * 0.006)) doubled.add(kept[Math.floor(rnd2() * kept.length)]);
+  for (const p of doubled) payments.rows.push([++maxPay, p[1], p[2], ts(Date.parse(p[3].replace(' ', 'T') + 'Z') + 120000), p[4]]);
+
+  const emb = table('product_embeddings', ['product_id', 'embedding']);
+  const DIM = 8;
+  const unit = () => { const v = Array.from({ length: DIM }, () => rnd2() * 2 - 1); const n = Math.hypot(...v); return v.map((x) => x / n); };
+  const rootOf = (c) => { let cur = categories.rows.find((r) => r[0] === c); while (cur[2] !== null) { const parent = cur[2]; cur = categories.rows.find((r) => r[0] === parent); } return cur[0]; };
+  const rootVec = {}, leafVec = {};
+  for (const c of categories.rows) if (c[2] === null) rootVec[c[0]] = unit();
+  for (const p of products.rows) {
+    const cat = p[1];
+    if (!leafVec[cat]) leafVec[cat] = unit();
+    const r = rootVec[rootOf(cat)], l = leafVec[cat], noise = unit();
+    const v = r.map((x, i) => x * 1 + l[i] * 0.6 + noise[i] * 0.35);
+    const n = Math.hypot(...v);
+    emb.rows.push([p[0], '[' + v.map((x) => (x / n).toFixed(4)).join(',') + ']']);
+  }
 
   return T;
 }
@@ -319,9 +348,17 @@ CREATE TABLE ${s}.warehouses (warehouse_id int PRIMARY KEY, name text NOT NULL, 
 CREATE TABLE ${s}.stock (warehouse_id int NOT NULL REFERENCES ${s}.warehouses, product_id int NOT NULL REFERENCES ${s}.products, qty int NOT NULL, updated_at timestamp NOT NULL, PRIMARY KEY (warehouse_id, product_id));
 CREATE TABLE ${s}.events (event_id int PRIMARY KEY, customer_id int NOT NULL REFERENCES ${s}.customers, session_id int NOT NULL, event_type text NOT NULL, event_ts timestamp NOT NULL, props jsonb);
 CREATE TABLE ${s}.ab_assignments (customer_id int NOT NULL REFERENCES ${s}.customers, experiment text NOT NULL, variant text NOT NULL, assigned_at timestamp NOT NULL, PRIMARY KEY (customer_id, experiment));
+CREATE TABLE ${s}.product_embeddings (product_id int PRIMARY KEY REFERENCES ${s}.products, embedding vector(8) NOT NULL);
 `;
 
-export const TABLE_ORDER = ['categories', 'customers', 'products', 'promo_codes', 'orders', 'order_items', 'payments', 'deliveries', 'order_promos', 'reviews', 'employees', 'warehouses', 'stock', 'events', 'ab_assignments'];
+export const INDEXES = (s) => `
+CREATE INDEX orders_created_at_idx ON ${s}.orders (created_at);
+CREATE INDEX orders_customer_idx ON ${s}.orders (customer_id);
+CREATE INDEX order_items_product_idx ON ${s}.order_items (product_id);
+CREATE INDEX reviews_product_idx ON ${s}.reviews (product_id);
+`;
+
+export const TABLE_ORDER = ['categories', 'customers', 'products', 'promo_codes', 'orders', 'order_items', 'payments', 'deliveries', 'order_promos', 'reviews', 'employees', 'warehouses', 'stock', 'events', 'ab_assignments', 'product_embeddings'];
 
 const lit = (v) => {
   if (v === null || v === undefined) return 'NULL';
@@ -331,6 +368,7 @@ const lit = (v) => {
 };
 
 export async function loadInto(db, schema, T) {
+  await db.exec('CREATE EXTENSION IF NOT EXISTS vector;');
   await db.exec(DDL(schema));
   for (const name of TABLE_ORDER) {
     const { columns, rows } = T[name];
@@ -339,4 +377,5 @@ export async function loadInto(db, schema, T) {
       await db.exec(`INSERT INTO ${schema}.${name} (${columns.join(',')}) VALUES ${chunk};`);
     }
   }
+  await db.exec(INDEXES(schema));
 }

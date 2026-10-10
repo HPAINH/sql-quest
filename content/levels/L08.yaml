@@ -1,0 +1,396 @@
+level: 8
+grade: Middle
+title: Оконные функции II
+tag: LAG
+book_chapter: 10
+summary: Смотрим на соседние строки и накапливаем — изменения к прошлому периоду, нарастающие итоги, скользящие средние, квантили и рамки окна.
+theory: |
+  **Соседние строки.** `LAG(x)` берёт значение из предыдущей строки окна, `LEAD(x)` — из следующей. Второй аргумент — смещение, третий — значение по умолчанию: `LAG(revenue, 1, 0) OVER (ORDER BY month)`.
+
+  **Нарастающий итог** — агрегат с ORDER BY в окне:
+
+  ```sql
+  SUM(revenue) OVER (ORDER BY month) AS cumulative
+  ```
+
+  **Рамка окна** уточняет, какие строки вокруг текущей входят в расчёт:
+
+  ```sql
+  AVG(revenue) OVER (ORDER BY day ROWS BETWEEN 6 PRECEDING AND CURRENT ROW)
+  ```
+
+  Это скользящее среднее за 7 строк: текущая и 6 предыдущих.
+
+  - `ROWS` считает физические строки;
+  - `RANGE` считает по значению ORDER BY — строки с одинаковым значением («пиры») попадают в рамку вместе.
+
+  **Ловушка рамки по умолчанию.** Если в OVER есть ORDER BY, рамка по умолчанию — `RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW`. Поэтому нарастающий итог работает «сам», а `LAST_VALUE` возвращает текущую строку. Для последнего значения окна укажите `ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING`.
+
+  **Квантили:** `NTILE(4) OVER (ORDER BY total DESC)` делит строки на 4 почти равные группы. `PERCENT_RANK()` и `CUME_DIST()` дают относительное положение строки от 0 до 1.
+
+  `FIRST_VALUE(x)` — значение из первой строки окна, удобно для «самого дешёвого в категории» или «первой покупки клиента».
+
+  Чтобы не повторять одно окно несколько раз, его можно назвать: `… OVER w FROM t WINDOW w AS (PARTITION BY … ORDER BY …)`.
+tasks:
+  - id: L08-01
+    type: write_query
+    difficulty: 2
+    customer: Финансы
+    title: Месяц к месяцу
+    ticket: Выручка доставленных заказов по месяцам 2025 года и её изменение к предыдущему месяцу — month (date), revenue, prev_revenue и diff (у января prev_revenue и diff пустые).
+    tables: [orders]
+    expected_columns: [month, revenue, prev_revenue, diff]
+    check_column_names: true
+    ordered: true
+    required: [lag]
+    reference: |
+      WITH m AS (
+        SELECT date_trunc('month', created_at)::date AS month, SUM(amount) AS revenue
+        FROM orders
+        WHERE status = 'delivered' AND created_at >= '2025-01-01' AND created_at < '2026-01-01'
+        GROUP BY month
+      )
+      SELECT month, revenue,
+             LAG(revenue) OVER (ORDER BY month) AS prev_revenue,
+             revenue - LAG(revenue) OVER (ORDER BY month) AS diff
+      FROM m
+      ORDER BY month;
+    hints:
+      - Сначала выручка по месяцам, потом значение предыдущей строки.
+      - "LAG(revenue) OVER (ORDER BY month)."
+      - "1) CTE с выручкой по месяцам. 2) LAG для prev_revenue. 3) diff = revenue − LAG."
+      - "LAG(revenue) OVER (ORDER BY ___) AS prev_revenue"
+      - "LAG смотрит на строку выше в порядке окна. У первой строки предыдущей нет, поэтому результат NULL — и разность тоже NULL."
+
+  - id: L08-02
+    type: write_query
+    difficulty: 2
+    customer: CRM
+    title: Когда вернулся
+    ticket: Для клиентов из Воронежа — каждый заказ и время следующего заказа того же клиента. customer_id, order_id, created_at, next_order_at (у последнего заказа пусто).
+    tables: [orders, customers]
+    expected_columns: [customer_id, order_id, created_at, next_order_at]
+    check_column_names: true
+    required: [lead]
+    reference: |
+      SELECT o.customer_id, o.order_id, o.created_at,
+             LEAD(o.created_at) OVER (PARTITION BY o.customer_id ORDER BY o.created_at) AS next_order_at
+      FROM orders AS o
+      JOIN customers AS c ON c.customer_id = o.customer_id
+      WHERE c.city = 'Воронеж';
+    hints:
+      - Следующая строка в истории клиента — функция, обратная LAG.
+      - "LEAD(created_at) OVER (PARTITION BY customer_id ORDER BY created_at)."
+      - "1) Отфильтруй клиентов Воронежа. 2) LEAD внутри окна клиента."
+      - "___(o.created_at) OVER (PARTITION BY o.customer_id ORDER BY o.created_at)"
+      - "PARTITION BY не даёт LEAD заглянуть в заказы другого клиента: у последнего заказа каждого клиента значение пустое."
+
+  - id: L08-03
+    type: write_query
+    difficulty: 1
+    customer: Финансы
+    title: Нарастающим итогом
+    ticket: Выручка доставленных заказов по месяцам 2025 года и нарастающий итог с начала года — month (date), revenue, cumulative.
+    tables: [orders]
+    expected_columns: [month, revenue, cumulative]
+    check_column_names: true
+    ordered: true
+    required: [window]
+    reference: |
+      WITH m AS (
+        SELECT date_trunc('month', created_at)::date AS month, SUM(amount) AS revenue
+        FROM orders
+        WHERE status = 'delivered' AND created_at >= '2025-01-01' AND created_at < '2026-01-01'
+        GROUP BY month
+      )
+      SELECT month, revenue, SUM(revenue) OVER (ORDER BY month) AS cumulative
+      FROM m
+      ORDER BY month;
+    hints:
+      - Нарастающий итог — это сумма всех строк от начала до текущей.
+      - "SUM(revenue) OVER (ORDER BY month)."
+      - "1) Выручка по месяцам. 2) Оконная сумма с сортировкой по месяцу."
+      - "SUM(revenue) OVER (ORDER BY ___) AS cumulative"
+      - "С ORDER BY рамка окна по умолчанию — от начала до текущей строки, поэтому SUM становится нарастающим итогом."
+
+  - id: L08-04
+    type: write_query
+    difficulty: 2
+    customer: Финансы
+    title: Скользящая неделя
+    ticket: Выручка доставленных заказов по дням июня 2026 года и скользящее среднее за 7 дней (текущий и 6 предыдущих дней с продажами) — day, revenue, ma7 (2 знака).
+    tables: [orders]
+    expected_columns: [day, revenue, ma7]
+    check_column_names: true
+    ordered: true
+    required: [rows]
+    reference: |
+      WITH d AS (
+        SELECT created_at::date AS day, SUM(amount) AS revenue
+        FROM orders
+        WHERE status = 'delivered' AND created_at >= '2026-06-01' AND created_at < '2026-07-01'
+        GROUP BY day
+      )
+      SELECT day, revenue,
+             round(AVG(revenue) OVER (ORDER BY day ROWS BETWEEN 6 PRECEDING AND CURRENT ROW), 2) AS ma7
+      FROM d
+      ORDER BY day;
+    hints:
+      - Нужно среднее по скользящему окну фиксированного размера.
+      - "Рамка ROWS BETWEEN 6 PRECEDING AND CURRENT ROW — это 7 строк."
+      - "1) Выручка по дням. 2) AVG с рамкой из 7 строк. 3) Округление."
+      - "AVG(revenue) OVER (ORDER BY day ROWS BETWEEN ___ PRECEDING AND CURRENT ROW)"
+      - "6 предыдущих + текущая = 7 строк. В первые дни месяца окно короче, и среднее считается по тому, что есть."
+
+  - id: L08-05
+    type: write_query
+    difficulty: 2
+    customer: CRM
+    title: Квартили клиентов
+    ticket: Разделите клиентов на четыре равные группы по сумме доставленных заказов за 2025 год — customer_id, total, quartile (1 — самые крупные). При равной сумме меньший customer_id идёт раньше.
+    tables: [orders]
+    expected_columns: [customer_id, total, quartile]
+    check_column_names: true
+    required: [ntile]
+    reference: |
+      WITH t AS (
+        SELECT customer_id, SUM(amount) AS total
+        FROM orders
+        WHERE status = 'delivered' AND created_at >= '2025-01-01' AND created_at < '2026-01-01'
+        GROUP BY customer_id
+      )
+      SELECT customer_id, total,
+             NTILE(4) OVER (ORDER BY total DESC, customer_id) AS quartile
+      FROM t;
+    hints:
+      - Деление на равные по количеству группы — отдельная оконная функция.
+      - "NTILE(4) OVER (ORDER BY total DESC, customer_id)."
+      - "1) Суммы по клиентам за 2025 год. 2) NTILE(4) с сортировкой от крупных."
+      - "___(4) OVER (ORDER BY total DESC, customer_id) AS quartile"
+      - "NTILE раскладывает строки по порядку в N групп почти одинакового размера. Второй ключ сортировки делает разбиение воспроизводимым при равных суммах."
+
+  - id: L08-06
+    type: write_query
+    difficulty: 2
+    customer: Каталог
+    title: Самый доступный рядом
+    ticket: Для всех наушников (category_id = 9) — product_id, name, price и cheapest — название самого дешёвого товара этой категории (при равной цене — с меньшим product_id).
+    tables: [products]
+    expected_columns: [product_id, name, price, cheapest]
+    check_column_names: true
+    required: [first_value]
+    reference: |
+      SELECT product_id, name, price,
+             FIRST_VALUE(name) OVER (PARTITION BY category_id ORDER BY price, product_id) AS cheapest
+      FROM products
+      WHERE category_id = 9;
+    hints:
+      - Нужно значение из первой строки окна, отсортированного по цене.
+      - "FIRST_VALUE(name) OVER (ORDER BY price, product_id)."
+      - "1) Фильтр категории. 2) FIRST_VALUE имени по возрастанию цены."
+      - "___(name) OVER (PARTITION BY category_id ORDER BY price, product_id)"
+      - "Для первой строки окна рамка по умолчанию подходит: она всегда начинается с начала окна. С LAST_VALUE так не получится."
+
+  - id: L08-07
+    type: write_query
+    difficulty: 3
+    customer: CRM
+    title: Вернувшиеся
+    ticket: |
+      Найдите возвраты после долгого перерыва — заказы, сделанные больше чем через 180 дней после предыдущего заказа того же клиента.
+      Колонки customer_id, order_id, gap_days (число полных дней между заказами).
+    tables: [orders]
+    expected_columns: [customer_id, order_id, gap_days]
+    check_column_names: true
+    required: [lag]
+    reference: |
+      WITH g AS (
+        SELECT customer_id, order_id, created_at,
+               LAG(created_at) OVER (PARTITION BY customer_id ORDER BY created_at) AS prev_at
+        FROM orders
+      )
+      SELECT customer_id, order_id, EXTRACT(DAY FROM created_at - prev_at)::int AS gap_days
+      FROM g
+      WHERE created_at - prev_at > interval '180 days';
+    hints:
+      - Для каждого заказа нужна дата предыдущего заказа того же клиента.
+      - "LAG(created_at) OVER (PARTITION BY customer_id ORDER BY created_at)."
+      - "1) CTE с prev_at. 2) Снаружи фильтр по разности. 3) Полные дни — EXTRACT(DAY FROM интервал)."
+      - "… WHERE created_at - prev_at > interval '___ days'"
+      - "Разность timestamp даёт интервал вида «200 days 05:12:00»; EXTRACT(DAY …) берёт из него целые дни. Фильтр стоит снаружи, потому что окна в WHERE недоступны."
+
+  - id: L08-08
+    type: fix_bug
+    difficulty: 2
+    customer: CRM
+    title: Последний заказ рядом
+    ticket: Для каждого заказа клиентов из Перми нужна дата последнего заказа этого клиента — customer_id, order_id, last_order_at. Запрос возвращает дату текущего заказа. Почините.
+    tables: [orders, customers]
+    expected_columns: [customer_id, order_id, last_order_at]
+    broken_query: |
+      SELECT o.customer_id, o.order_id,
+             LAST_VALUE(o.created_at) OVER (PARTITION BY o.customer_id ORDER BY o.created_at) AS last_order_at
+      FROM orders AS o
+      JOIN customers AS c ON c.customer_id = o.customer_id
+      WHERE c.city = 'Пермь';
+    reference: |
+      SELECT o.customer_id, o.order_id,
+             LAST_VALUE(o.created_at) OVER (
+               PARTITION BY o.customer_id ORDER BY o.created_at
+               ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
+             ) AS last_order_at
+      FROM orders AS o
+      JOIN customers AS c ON c.customer_id = o.customer_id
+      WHERE c.city = 'Пермь';
+    hints:
+      - Подумай, где заканчивается окно по умолчанию.
+      - "С ORDER BY рамка по умолчанию — от начала до текущей строки."
+      - "1) Расширь рамку до конца окна. 2) Или используй MAX без ORDER BY."
+      - "OVER (PARTITION BY o.customer_id ORDER BY o.created_at ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED ___)"
+      - "Рамка по умолчанию обрывается на текущей строке, и последней в ней оказывается она сама. Полная рамка или MAX(created_at) OVER (PARTITION BY customer_id) дают последнюю дату клиента."
+
+  - id: L08-09
+    type: fix_bug
+    difficulty: 1
+    customer: Финансы
+    title: Восьмидневная неделя
+    ticket: Скользящее среднее выручки доставленных заказов за 7 дней по дням мая 2026 года считается неверно — day, revenue, ma7 (2 знака). Почините.
+    tables: [orders]
+    expected_columns: [day, revenue, ma7]
+    ordered: true
+    broken_query: |
+      WITH d AS (
+        SELECT created_at::date AS day, SUM(amount) AS revenue
+        FROM orders
+        WHERE status = 'delivered' AND created_at >= '2026-05-01' AND created_at < '2026-06-01'
+        GROUP BY day
+      )
+      SELECT day, revenue,
+             round(AVG(revenue) OVER (ORDER BY day ROWS BETWEEN 7 PRECEDING AND CURRENT ROW), 2) AS ma7
+      FROM d
+      ORDER BY day;
+    reference: |
+      WITH d AS (
+        SELECT created_at::date AS day, SUM(amount) AS revenue
+        FROM orders
+        WHERE status = 'delivered' AND created_at >= '2026-05-01' AND created_at < '2026-06-01'
+        GROUP BY day
+      )
+      SELECT day, revenue,
+             round(AVG(revenue) OVER (ORDER BY day ROWS BETWEEN 6 PRECEDING AND CURRENT ROW), 2) AS ma7
+      FROM d
+      ORDER BY day;
+    hints:
+      - Посчитай, сколько строк попадает в рамку.
+      - "7 PRECEDING + CURRENT ROW = 8 строк."
+      - "1) Найди рамку. 2) Уменьши смещение на единицу."
+      - "ROWS BETWEEN ___ PRECEDING AND CURRENT ROW"
+      - "Текущая строка тоже входит в рамку, поэтому для 7 дней нужно 6 предыдущих. Классическая ошибка на единицу."
+
+  - id: L08-10
+    type: predict
+    difficulty: 3
+    customer: Обучение
+    title: Пиры в рамке
+    ticket: Что вернёт запрос?
+    tables: []
+    query: |
+      SELECT s
+      FROM (
+        SELECT x, SUM(x) OVER (ORDER BY x) AS s
+        FROM (VALUES (1), (2), (2), (3)) AS t(x)
+      ) AS q
+      WHERE x = 2
+      LIMIT 1;
+    ask: value
+    distractor_values: ['3', '1', '8']
+    hints:
+      - Вспомни, какая рамка используется по умолчанию при ORDER BY в окне.
+      - "Рамка по умолчанию — RANGE: строки с тем же значением ORDER BY входят в неё вместе."
+      - "1) Для первой двойки рамка включает 1 и обе двойки. 2) Сложи."
+      - "1 + 2 + 2 = ___"
+      - "RANGE включает в рамку всех «пиров» — строки с одинаковым x. Поэтому у обеих двоек нарастающий итог 5, а не 3 и 5. С ROWS первая двойка получила бы 3."
+
+  - id: L08-11
+    type: choose
+    difficulty: 3
+    customer: Обучение
+    title: Нарастающий итог клиента
+    ticket: Нужен нарастающий итог суммы заказов каждого клиента из Ростова-на-Дону по времени — customer_id, order_id, running. Какие запросы верны? Отметьте все.
+    tables: [orders, customers]
+    expected_columns: [customer_id, order_id, running]
+    reference: |
+      SELECT o.customer_id, o.order_id, SUM(o.amount) OVER (PARTITION BY o.customer_id ORDER BY o.created_at) AS running FROM orders o JOIN customers c ON c.customer_id = o.customer_id WHERE c.city = 'Ростов-на-Дону';
+    options:
+      - SELECT o.customer_id, o.order_id, SUM(o.amount) OVER (PARTITION BY o.customer_id ORDER BY o.created_at) AS running FROM orders o JOIN customers c ON c.customer_id = o.customer_id WHERE c.city = 'Ростов-на-Дону';
+      - SELECT o.customer_id, o.order_id, SUM(o.amount) OVER (PARTITION BY o.customer_id) AS running FROM orders o JOIN customers c ON c.customer_id = o.customer_id WHERE c.city = 'Ростов-на-Дону';
+      - SELECT o.customer_id, o.order_id, SUM(o.amount) OVER (PARTITION BY o.customer_id ORDER BY o.created_at ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS running FROM orders o JOIN customers c ON c.customer_id = o.customer_id WHERE c.city = 'Ростов-на-Дону';
+      - SELECT o.customer_id, o.order_id, SUM(o.amount) OVER (ORDER BY o.created_at) AS running FROM orders o JOIN customers c ON c.customer_id = o.customer_id WHERE c.city = 'Ростов-на-Дону';
+    expect_correct: [0, 2]
+    hints:
+      - Итог должен копиться отдельно для каждого клиента и расти по времени.
+      - "Без ORDER BY в окне сумма одинакова во всех строках клиента."
+      - "Без PARTITION BY сумма копится по всем клиентам сразу."
+      - Время заказов одного клиента не совпадает, поэтому ROWS и RANGE здесь дают одно и то же.
+      - "Верны варианты с PARTITION BY клиента и ORDER BY по времени — с явной рамкой ROWS и без неё."
+
+  - id: L08-12
+    type: target_table
+    difficulty: 2
+    customer: Маркетинг
+    title: Рост базы
+    ticket: Получите таблицу как на образце — новые клиенты по месяцам регистрации в 2025 году и накопительное число клиентов, зарегистрированных с начала 2025 года.
+    tables: [customers]
+    expected_columns: [month, new_customers, total_customers]
+    ordered: true
+    required: [window]
+    reference: |
+      SELECT date_trunc('month', registered_at)::date AS month,
+             COUNT(*) AS new_customers,
+             SUM(COUNT(*)) OVER (ORDER BY date_trunc('month', registered_at)::date) AS total_customers
+      FROM customers
+      WHERE registered_at >= '2025-01-01' AND registered_at < '2026-01-01'
+      GROUP BY month
+      ORDER BY month;
+    hints:
+      - Это нарастающий итог по результату группировки.
+      - "Оконную функцию можно применить к агрегату: SUM(COUNT(*)) OVER (ORDER BY …)."
+      - "1) Группировка регистраций по месяцам. 2) Оконная сумма количеств по месяцам."
+      - "SUM(COUNT(*)) OVER (ORDER BY date_trunc('month', registered_at)::date) AS total_customers"
+      - "Окна считаются после GROUP BY, поэтому внутрь окна можно поставить агрегат группы. Можно и в два шага через CTE."
+
+  - id: L08-13
+    type: write_query
+    boss: true
+    difficulty: 3
+    customer: Финансы
+    title: "Инцидент: дневная динамика"
+    ticket: |
+      Дашборд продаж за июнь 2026 года сломался, финансовый директор просит таблицу вручную. По дням с продажами (доставленные заказы):
+      day; revenue; dod_pct — изменение к предыдущему дню в процентах (1 знак, у первого дня пусто); ma7 — скользящее среднее за 7 дней (текущий и 6 предыдущих дней с продажами, 2 знака); best_so_far — лучшая дневная выручка с начала месяца по текущий день включительно.
+      Сортировка по дню.
+    tables: [orders]
+    expected_columns: [day, revenue, dod_pct, ma7, best_so_far]
+    check_column_names: true
+    ordered: true
+    required: [lag, rows]
+    reference: |
+      WITH d AS (
+        SELECT created_at::date AS day, SUM(amount) AS revenue
+        FROM orders
+        WHERE status = 'delivered' AND created_at >= '2026-06-01' AND created_at < '2026-07-01'
+        GROUP BY day
+      )
+      SELECT day, revenue,
+             round(100 * (revenue - LAG(revenue) OVER w) / NULLIF(LAG(revenue) OVER w, 0), 1) AS dod_pct,
+             round(AVG(revenue) OVER (w ROWS BETWEEN 6 PRECEDING AND CURRENT ROW), 2) AS ma7,
+             MAX(revenue) OVER (w ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS best_so_far
+      FROM d
+      WINDOW w AS (ORDER BY day)
+      ORDER BY day;
+    hints:
+      - Все три показателя — окна по одному порядку дней. Посчитай выручку по дням в CTE и добавь окна.
+      - "dod_pct через LAG, ma7 через AVG с рамкой ROWS, best_so_far через MAX с нарастающей рамкой."
+      - "1) CTE d: выручка по дням. 2) LAG для изменения. 3) AVG с рамкой 6 PRECEDING. 4) MAX нарастающим окном. 5) Чтобы не повторять OVER, объяви WINDOW w AS (ORDER BY day)."
+      - "round(100 * (revenue - LAG(revenue) OVER w) / NULLIF(LAG(revenue) OVER w, 0), 1) AS dod_pct, round(AVG(revenue) OVER (w ROWS BETWEEN 6 PRECEDING AND CURRENT ROW), 2) AS ma7, MAX(revenue) OVER (w ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS best_so_far … WINDOW w AS (ORDER BY day)"
+      - "Именованное окно задаёт порядок один раз, а каждая функция уточняет свою рамку. NULLIF защищает от деления на ноль, а у первого дня LAG пуст, поэтому и процент пуст."

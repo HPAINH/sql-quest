@@ -2,6 +2,8 @@ const TIMEOUT_MS = 5000;
 const OVERRIDE = globalThis.SQLQUEST_ASSETS || {};
 const DATA_URL = new URL(OVERRIDE.data || './data/shop.tar.gz', document.baseURI).href;
 const FS_URL = OVERRIDE.fs ? new URL(OVERRIDE.fs, document.baseURI).href : undefined;
+const VEC_URL = OVERRIDE.vec ? new URL(OVERRIDE.vec, document.baseURI).href : undefined;
+const INIT = () => ({ type: 'init', url: DATA_URL, fs: FS_URL, vec: VEC_URL });
 
 let worker = null;
 let ready = null;
@@ -45,20 +47,24 @@ function restart() {
   for (const [, p] of pending) { clearTimeout(p.timer); p.resolve({ error: { code: '57014', message: 'База перезапущена' } }); }
   pending.clear();
   spawn();
-  ready = call({ type: 'init', url: DATA_URL, fs: FS_URL });
+  ready = call(INIT());
 }
 
 export function initDb(progress) {
   if (progress) onProgress = progress;
-  if (!ready) { spawn(); ready = call({ type: 'init', url: DATA_URL, fs: FS_URL }); }
+  if (!ready) { spawn(); ready = call(INIT()); }
   return ready;
 }
 
-export function runQuery(sql, schema = 'shop') {
+function enqueue(msg) {
   const job = chain.then(async () => {
     await ready;
-    return call({ type: 'query', sql, schema }, TIMEOUT_MS);
+    return call(msg, TIMEOUT_MS);
   });
   chain = job.catch(() => {});
   return job;
 }
+
+export const runQuery = (sql, schema = 'shop') => enqueue({ type: 'query', sql, schema });
+export const runExplain = (sql, schema = 'shop') => enqueue({ type: 'explain', sql, schema });
+export const runScript = (sql, schema = 'shop', verify = null, probe = null) => enqueue({ type: 'script', sql, schema, verify, probe });

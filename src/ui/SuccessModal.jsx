@@ -3,6 +3,7 @@ import { Modal, Stars, copyText } from './common.jsx';
 import Editor from './Editor.jsx';
 
 export default function SuccessModal({ task, level, content, solution, result, password, onClose, onNext }) {
+  const final = task.boss && level.level === content.levels[content.levels.length - 1].level;
   const [shown, setShown] = useState(0);
   const [xp, setXp] = useState(0);
   const [copied, setCopied] = useState(false);
@@ -55,6 +56,13 @@ export default function SuccessModal({ task, level, content, solution, result, p
         </div>
       )}
 
+      {final && (
+        <div className="promo">
+          <h3>Карта пройдена: грейд Lead</h3>
+          <p>Ты прошёл все {content.levels.length} уровней ShopData — от первого SELECT до витрины признаков для модели. Сохрани код прогресса и возвращайся к тикетам, где не хватает звёзд.</p>
+        </div>
+      )}
+
       <div className="sx-solution">
         <h3>Как решил аналитик ShopData</h3>
         {solution.sql && <Editor value={solution.sql} readOnly minLines={2} ariaLabel="Эталонное решение" />}
@@ -64,7 +72,7 @@ export default function SuccessModal({ task, level, content, solution, result, p
       </div>
 
       <div className="modal-actions">
-        <button className="btn primary" onClick={onNext} autoFocus>{nextLevel ? `К уровню ${nextLevel.level}` : 'Следующий тикет'}</button>
+        <button className="btn primary" onClick={onNext} autoFocus>{final ? 'На карту' : nextLevel ? `К уровню ${nextLevel.level}` : 'Следующий тикет'}</button>
         <button className="btn ghost" onClick={onClose}>Остаться здесь</button>
       </div>
     </Modal>

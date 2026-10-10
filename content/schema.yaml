@@ -103,7 +103,7 @@ stock:
     qty: остаток, шт.
     updated_at: время обновления
 events:
-  about: События на сайте (для будущих уровней)
+  about: События на сайте — просмотры, корзина, оформление, покупка
   columns:
     event_id: id события
     customer_id: клиент → customers
@@ -118,3 +118,8 @@ ab_assignments:
     experiment: название теста
     variant: группа A или B
     assigned_at: время распределения
+product_embeddings:
+  about: Векторы товаров для поиска похожих (pgvector)
+  columns:
+    product_id: товар → products
+    embedding: вектор из 8 чисел

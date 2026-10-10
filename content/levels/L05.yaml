@@ -1,0 +1,396 @@
+level: 5
+grade: Junior
+title: Подзапросы и множества
+tag: EXISTS
+book_chapter: 7
+summary: Запрос внутри запроса — сравниваем со средним, ищем строки с парой и без пары, складываем и вычитаем выборки.
+theory: |
+  **Подзапрос** — это SELECT внутри другого запроса. Он бывает трёх видов.
+
+  **Скалярный** возвращает одно значение и стоит там, где ждут число или текст:
+
+  ```sql
+  SELECT name, price
+  FROM products
+  WHERE price > (SELECT AVG(price) FROM products);
+  ```
+
+  **Список** — для `IN`: `WHERE customer_id IN (SELECT customer_id FROM orders)`.
+
+  **Таблица** — в `FROM`, обязательно с псевдонимом: `FROM (SELECT …) AS t`.
+
+  **Коррелированный подзапрос** ссылается на строку внешнего запроса и выполняется для каждой из них:
+
+  ```sql
+  SELECT p.name, p.price
+  FROM products AS p
+  WHERE p.price = (SELECT MAX(price) FROM products WHERE category_id = p.category_id);
+  ```
+
+  **EXISTS / NOT EXISTS** проверяют, есть ли у строки пара: `WHERE EXISTS (SELECT 1 FROM reviews r WHERE r.customer_id = c.customer_id)`. Что именно выбирает подзапрос, неважно — важно, вернул ли он хоть одну строку.
+
+  **Ловушка NOT IN.** Если в подзапросе встретится хотя бы один NULL, `x NOT IN (…)` никогда не будет истинным, и запрос вернёт пустоту. Для «нет пары» надёжнее `NOT EXISTS`.
+
+  **ANY / ALL:** `price > ALL (SELECT …)` — больше каждого значения, `price = ANY (…)` — то же, что IN.
+
+  **Операции над множествами** складывают результаты запросов с одинаковыми колонками:
+
+  - `UNION` — объединение без повторов, `UNION ALL` — с повторами (и быстрее);
+  - `INTERSECT` — строки, которые есть в обоих;
+  - `EXCEPT` — строки первого запроса, которых нет во втором.
+tasks:
+  - id: L05-01
+    type: write_query
+    difficulty: 1
+    customer: Маркетинг
+    title: Дороже среднего
+    ticket: Какие товары стоят дороже средней цены по всему каталогу? product_id, name, price.
+    tables: [products]
+    expected_columns: [product_id, name, price]
+    required: [subquery]
+    reference: |
+      SELECT product_id, name, price
+      FROM products
+      WHERE price > (SELECT AVG(price) FROM products);
+    hints:
+      - Средняя цена — одно число, его можно посчитать отдельным запросом прямо внутри условия.
+      - "Таблица products. Подзапрос (SELECT AVG(price) FROM products) вернёт одно значение."
+      - "1) Напиши подзапрос со средней ценой. 2) Подставь его в WHERE вместо числа."
+      - "WHERE price > (SELECT ___(price) FROM products)"
+      - "Скалярный подзапрос считается один раз и подставляется в условие как обычное число. Агрегат прямо в WHERE написать нельзя, а в подзапросе — можно."
+
+  - id: L05-02
+    type: write_query
+    difficulty: 2
+    customer: Логистика
+    title: Подарки в Казань
+    ticket: Кто из клиентов заказывал доставку в Казань, хотя сам живёт в другом городе? customer_id и city.
+    tables: [customers, orders]
+    expected_columns: [customer_id, city]
+    required: [in]
+    reference: |
+      SELECT customer_id, city
+      FROM customers
+      WHERE city <> 'Казань'
+        AND customer_id IN (SELECT customer_id FROM orders WHERE delivery_city = 'Казань');
+    hints:
+      - Сначала нужен список клиентов, отправлявших заказы в Казань, затем фильтр по нему.
+      - "orders.delivery_city — куда доставляли, customers.city — где живёт клиент."
+      - "1) Подзапрос: customer_id из orders с доставкой в Казань. 2) Внешний запрос: клиенты из этого списка и не из Казани."
+      - "WHERE city <> 'Казань' AND customer_id IN (SELECT ___ FROM orders WHERE delivery_city = 'Казань')"
+      - "IN с подзапросом проверяет вхождение в список. Повторы в подзапросе не мешают — клиент попадёт в результат один раз, в отличие от JOIN."
+
+  - id: L05-03
+    type: write_query
+    difficulty: 2
+    customer: Качество
+    title: Разочарованные
+    ticket: Найдите клиентов, которые хотя бы раз поставили оценку 1, — customer_id, first_name, last_name.
+    tables: [customers, reviews]
+    expected_columns: [customer_id, first_name, last_name]
+    required: [exists]
+    reference: |
+      SELECT c.customer_id, c.first_name, c.last_name
+      FROM customers AS c
+      WHERE EXISTS (
+        SELECT 1 FROM reviews AS r
+        WHERE r.customer_id = c.customer_id AND r.rating = 1
+      );
+    hints:
+      - Нужно проверить для каждого клиента, существует ли у него подходящий отзыв.
+      - "EXISTS (SELECT 1 FROM reviews r WHERE r.customer_id = c.customer_id AND …)."
+      - "1) Внешний запрос по customers. 2) Коррелированный подзапрос ищет отзывы этого клиента с оценкой 1."
+      - "WHERE EXISTS (SELECT 1 FROM reviews AS r WHERE r.customer_id = ___ AND r.rating = 1)"
+      - "EXISTS истинно, если подзапрос вернул хоть одну строку. Клиент с тремя единицами всё равно попадёт в результат один раз — с JOIN понадобился бы DISTINCT."
+
+  - id: L05-04
+    type: write_query
+    difficulty: 2
+    customer: Качество
+    title: Продают, но молчат
+    ticket: Какие товары продавались, но не получили ни одного отзыва? product_id и name.
+    tables: [products, order_items, reviews]
+    expected_columns: [product_id, name]
+    required: [exists]
+    reference: |
+      SELECT p.product_id, p.name
+      FROM products AS p
+      WHERE EXISTS (SELECT 1 FROM order_items AS oi WHERE oi.product_id = p.product_id)
+        AND NOT EXISTS (SELECT 1 FROM reviews AS r WHERE r.product_id = p.product_id);
+    hints:
+      - Два условия на существование пары — одно положительное, одно отрицательное.
+      - "Продажи — в order_items, отзывы — в reviews, обе связаны с товаром по product_id."
+      - "1) EXISTS в order_items. 2) NOT EXISTS в reviews. 3) Соедини через AND."
+      - "WHERE EXISTS (SELECT 1 FROM order_items … ) AND ___ EXISTS (SELECT 1 FROM reviews …)"
+      - "EXISTS и NOT EXISTS отвечают на вопрос «есть ли пара», не размножая строки. Через JOIN пришлось бы следить за дублями."
+
+  - id: L05-05
+    type: write_query
+    difficulty: 2
+    customer: Каталог
+    title: Флагман категории
+    ticket: Самый дорогой товар в каждой категории — category_id, name, price. Если таких несколько, нужны все.
+    tables: [products]
+    expected_columns: [category_id, name, price]
+    reference: |
+      SELECT p.category_id, p.name, p.price
+      FROM products AS p
+      WHERE p.price = (SELECT MAX(price) FROM products AS p2 WHERE p2.category_id = p.category_id);
+    hints:
+      - Для каждого товара нужно сравнить его цену с максимумом в его же категории.
+      - "Коррелированный подзапрос: (SELECT MAX(price) FROM products p2 WHERE p2.category_id = p.category_id)."
+      - "1) Внешний запрос по products с псевдонимом p. 2) Подзапрос считает максимум категории p. 3) Оставь товары с ценой, равной максимуму."
+      - "WHERE p.price = (SELECT MAX(price) FROM products AS p2 WHERE p2.category_id = ___)"
+      - "Подзапрос ссылается на p из внешнего запроса и пересчитывается для каждой строки. Сравнение с максимумом сохраняет все товары с равной максимальной ценой."
+
+  - id: L05-06
+    type: write_query
+    difficulty: 3
+    customer: Финансы
+    title: Ценность клиента по городам
+    ticket: |
+      Посчитайте среднюю ценность клиента по городам: сначала сумма доставленных заказов каждого клиента, потом среднее этих сумм по городу клиента.
+      Колонки city и avg_ltv (округлить до копеек), по убыванию avg_ltv. Клиенты без доставленных заказов не учитываются.
+    tables: [customers, orders]
+    expected_columns: [city, avg_ltv]
+    check_column_names: true
+    ordered: true
+    order_keys: [avg_ltv]
+    required: [subquery]
+    reference: |
+      SELECT c.city, round(AVG(t.ltv), 2) AS avg_ltv
+      FROM (
+        SELECT customer_id, SUM(amount) AS ltv
+        FROM orders
+        WHERE status = 'delivered'
+        GROUP BY customer_id
+      ) AS t
+      JOIN customers AS c ON c.customer_id = t.customer_id
+      GROUP BY c.city
+      ORDER BY avg_ltv DESC;
+    common_mistakes:
+      - result: values_bigger
+        explain: "Похоже, это средний чек заказа, а не средняя сумма на клиента. Сначала сложи заказы каждого клиента в подзапросе, потом усредни."
+    hints:
+      - Это две группировки подряд — по клиенту, затем по городу. Первую удобно сделать подзапросом в FROM.
+      - "Подзапрос: SUM(amount) по customer_id для delivered. Снаружи — JOIN с customers и AVG по city."
+      - "1) Подзапрос t с суммой на клиента. 2) Соедини t с customers. 3) GROUP BY city и AVG(t.ltv)."
+      - "SELECT c.city, round(AVG(t.ltv), 2) AS avg_ltv FROM (SELECT customer_id, SUM(amount) AS ltv FROM orders WHERE status = 'delivered' GROUP BY customer_id) AS t JOIN customers AS c ON … GROUP BY c.city ORDER BY avg_ltv DESC;"
+      - "Подзапрос в FROM — это временная таблица. Без него AVG(amount) усреднил бы заказы, и клиенты с частыми мелкими покупками перевесили бы остальных."
+
+  - id: L05-07
+    type: write_query
+    difficulty: 1
+    customer: Стратегия
+    title: География присутствия
+    ticket: Во всех ли городах у нас есть клиенты или склады? Нужен общий список таких городов без повторов, по алфавиту. Колонка city.
+    tables: [customers, warehouses]
+    expected_columns: [city]
+    ordered: true
+    required: [union]
+    reference: |
+      SELECT city FROM customers
+      UNION
+      SELECT city FROM warehouses
+      ORDER BY city;
+    hints:
+      - Два списка городов нужно сложить в один и убрать повторы.
+      - "customers.city и warehouses.city. Объединение без повторов — UNION."
+      - "1) Запрос городов клиентов. 2) UNION. 3) Запрос городов складов. 4) ORDER BY в самом конце."
+      - "SELECT city FROM customers ___ SELECT city FROM warehouses ORDER BY city;"
+      - "UNION убирает повторы между выборками и внутри них. ORDER BY в конце сортирует уже объединённый результат."
+
+  - id: L05-08
+    type: write_query
+    difficulty: 2
+    customer: Логистика
+    title: Где не хватает складов
+    ticket: В каких городах есть клиенты, но нет нашего склада? Колонка city, по алфавиту.
+    tables: [customers, warehouses]
+    expected_columns: [city]
+    ordered: true
+    required: [except]
+    reference: |
+      SELECT city FROM customers
+      EXCEPT
+      SELECT city FROM warehouses
+      ORDER BY city;
+    hints:
+      - Из одного множества городов нужно вычесть другое.
+      - "Вычитание множеств — EXCEPT."
+      - "1) Города клиентов. 2) EXCEPT. 3) Города складов. 4) Сортировка."
+      - "SELECT city FROM customers ___ SELECT city FROM warehouses ORDER BY city;"
+      - "EXCEPT оставляет строки первого запроса, которых нет во втором, и заодно убирает повторы."
+
+  - id: L05-09
+    type: write_query
+    difficulty: 2
+    customer: Маркетинг
+    title: Активные и на СБП
+    ticket: Какие клиенты и оставляли отзывы, и хотя бы раз платили через СБП (method = 'sbp')? Колонка customer_id.
+    tables: [reviews, payments, orders]
+    expected_columns: [customer_id]
+    required: [intersect]
+    reference: |
+      SELECT customer_id FROM reviews
+      INTERSECT
+      SELECT o.customer_id
+      FROM payments AS p
+      JOIN orders AS o ON o.order_id = p.order_id
+      WHERE p.method = 'sbp';
+    hints:
+      - Нужно пересечение двух списков клиентов.
+      - "Платежи связаны с клиентом через orders: payments → orders.customer_id."
+      - "1) customer_id авторов отзывов. 2) INTERSECT. 3) customer_id тех, кто платил через sbp."
+      - "SELECT customer_id FROM reviews ___ SELECT o.customer_id FROM payments AS p JOIN orders AS o ON … WHERE p.method = 'sbp';"
+      - "INTERSECT оставляет значения, которые есть в обоих результатах, без повторов. Колонки сравниваются по позиции, имена могут различаться."
+
+  - id: L05-10
+    type: fix_bug
+    difficulty: 2
+    customer: HR
+    title: Никто не без подчинённых
+    ticket: Нужны сотрудники, у которых нет ни одного подчинённого, — employee_id и full_name. Запрос возвращает пустоту, хотя рядовых сотрудников десятки. Почините.
+    tables: [employees]
+    expected_columns: [employee_id, full_name]
+    broken_query: |
+      SELECT employee_id, full_name
+      FROM employees
+      WHERE employee_id NOT IN (SELECT manager_id FROM employees);
+    reference: |
+      SELECT e.employee_id, e.full_name
+      FROM employees AS e
+      WHERE NOT EXISTS (SELECT 1 FROM employees AS s WHERE s.manager_id = e.employee_id);
+    hints:
+      - Подумай, что лежит в manager_id у генерального директора.
+      - "У директора manager_id = NULL, и этот NULL попадает в список подзапроса."
+      - "1) Вспомни, как NOT IN ведёт себя с NULL в списке. 2) Замени конструкцию или отфильтруй NULL."
+      - "WHERE NOT EXISTS (SELECT 1 FROM employees AS s WHERE s.manager_id = ___)"
+      - "x NOT IN (1, 2, NULL) означает x <> 1 AND x <> 2 AND x <> NULL, а последнее всегда NULL — условие никогда не истинно. NOT EXISTS не страдает от NULL; другой вариант — добавить WHERE manager_id IS NOT NULL в подзапрос."
+
+  - id: L05-11
+    type: fix_bug
+    difficulty: 2
+    customer: Финансы
+    title: Дороже, чем в своём городе
+    ticket: Нужны заказы июня 2026 года, сумма которых выше средней суммы заказа в том же городе доставки (за всё время), — order_id, delivery_city, amount. Запрос падает. Почините.
+    tables: [orders]
+    expected_columns: [order_id, delivery_city, amount]
+    broken_query: |
+      SELECT order_id, delivery_city, amount
+      FROM orders
+      WHERE created_at >= '2026-06-01' AND created_at < '2026-07-01'
+        AND amount > (SELECT AVG(amount) FROM orders GROUP BY delivery_city);
+    reference: |
+      SELECT o.order_id, o.delivery_city, o.amount
+      FROM orders AS o
+      WHERE o.created_at >= '2026-06-01' AND o.created_at < '2026-07-01'
+        AND o.amount > (SELECT AVG(o2.amount) FROM orders AS o2 WHERE o2.delivery_city = o.delivery_city);
+    hints:
+      - Прочитай ошибку — подзапрос возвращает больше одной строки.
+      - "Подзапрос считает среднее для всех городов сразу, а нужно для города текущего заказа."
+      - "1) Убери GROUP BY. 2) Свяжи подзапрос с внешним заказом по городу. 3) Дай таблицам псевдонимы."
+      - "(SELECT AVG(o2.amount) FROM orders AS o2 WHERE o2.delivery_city = ___)"
+      - "Сравнивать можно только с одним значением. Коррелированный подзапрос считает среднее именно для города текущей строки — по одному числу на заказ."
+
+  - id: L05-12
+    type: predict
+    difficulty: 1
+    customer: Обучение
+    title: UNION или UNION ALL
+    ticket: Сколько строк вернёт запрос?
+    tables: [customers, warehouses]
+    query: |
+      SELECT city FROM customers
+      UNION ALL
+      SELECT city FROM warehouses;
+    ask: rows
+    distractor_queries:
+      - SELECT city FROM customers UNION SELECT city FROM warehouses;
+      - SELECT city FROM customers;
+    hints:
+      - Чем UNION ALL отличается от UNION?
+      - "UNION ALL ничего не удаляет — просто ставит один результат под другим."
+      - "1) Сколько строк в customers? 2) Сколько в warehouses? 3) Сложи."
+      - "Строк = клиенты + склады."
+      - "UNION ALL склеивает результаты целиком, с повторами: 2000 клиентов + 5 складов. UNION убрал бы повторы и оставил десяток уникальных городов."
+
+  - id: L05-13
+    type: choose
+    difficulty: 2
+    customer: Обучение
+    title: Клиенты без заказов
+    ticket: Какие запросы вернут клиентов, у которых нет ни одного заказа? Отметьте все верные.
+    tables: [customers, orders]
+    expected_columns: [customer_id]
+    reference: |
+      SELECT c.customer_id FROM customers c WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.customer_id);
+    options:
+      - SELECT c.customer_id FROM customers c WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.customer_id);
+      - SELECT c.customer_id FROM customers c JOIN orders o ON o.customer_id = c.customer_id WHERE o.order_id IS NULL;
+      - SELECT customer_id FROM customers WHERE customer_id NOT IN (SELECT customer_id FROM orders);
+      - SELECT customer_id FROM customers EXCEPT SELECT customer_id FROM orders;
+      - SELECT customer_id FROM customers WHERE customer_id NOT IN (SELECT customer_id FROM orders WHERE status = 'cancelled');
+    expect_correct: [0, 2, 3]
+    hints:
+      - Проверь каждый вариант мысленно на клиенте без заказов и на клиенте с заказом.
+      - "INNER JOIN не может дать строку, где o.order_id IS NULL."
+      - "orders.customer_id объявлен NOT NULL, поэтому ловушка NOT IN здесь не срабатывает."
+      - Последний вариант исключает только тех, у кого были отменённые заказы.
+      - "Верны NOT EXISTS, NOT IN (здесь безопасен: в orders.customer_id нет NULL) и EXCEPT. INNER JOIN оставляет только пары, а фильтр по cancelled ищет не тех клиентов."
+
+  - id: L05-14
+    type: target_table
+    difficulty: 2
+    customer: Маркетинг
+    title: Дороже любой Nova
+    ticket: Получите таблицу как на образце — товары дороже каждого товара бренда Nova, от дорогих к дешёвым.
+    tables: [products]
+    expected_columns: [name, brand, price]
+    ordered: true
+    order_keys: [price]
+    required: [any_all]
+    reference: |
+      SELECT name, brand, price
+      FROM products
+      WHERE price > ALL (SELECT price FROM products WHERE brand = 'Nova')
+      ORDER BY price DESC;
+    hints:
+      - Цена должна быть больше каждой цены из списка.
+      - "Для сравнения с каждым элементом списка есть ALL."
+      - "1) Подзапрос — цены товаров Nova. 2) Условие price > ALL (…). 3) Сортировка."
+      - "WHERE price > ___ (SELECT price FROM products WHERE brand = 'Nova')"
+      - "> ALL (…) истинно, если значение больше каждого элемента списка, — то же, что больше максимума. > ANY было бы «больше хотя бы одного»."
+
+  - id: L05-15
+    type: write_query
+    boss: true
+    difficulty: 3
+    customer: Финансы
+    title: "Инцидент: сверка оплат"
+    ticket: |
+      Бухгалтерия не может свести кассу: по части заказов деньги не пришли, а по некоторым — пришли дважды. Найдите заказы в статусах paid, shipped, delivered и returned, у которых сумма платежей не совпадает с суммой заказа (amount > 0).
+      Колонки: order_id, amount, paid (сумма платежей, 0 если их нет), diff = amount − paid. Сортировка по order_id.
+    tables: [orders, payments]
+    expected_columns: [order_id, amount, paid, diff]
+    check_column_names: true
+    ordered: true
+    reference: |
+      SELECT o.order_id, o.amount, t.paid, o.amount - t.paid AS diff
+      FROM orders AS o
+      CROSS JOIN LATERAL (
+        SELECT COALESCE(SUM(p.amount), 0) AS paid FROM payments AS p WHERE p.order_id = o.order_id
+      ) AS t
+      WHERE o.status IN ('paid', 'shipped', 'delivered', 'returned')
+        AND o.amount > 0
+        AND t.paid <> o.amount
+      ORDER BY o.order_id;
+    common_mistakes:
+      - result: rows_less
+        explain: "Не хватает строк. Заказы совсем без платежей тоже расходятся с кассой: их сумма платежей должна стать 0, а не пропасть."
+    hints:
+      - "Есть два вида расхождений: платежей нет совсем и платежей больше, чем нужно. Запрос должен ловить оба."
+      - "Сумму платежей заказа удобно посчитать коррелированным подзапросом или подзапросом в FROM с GROUP BY и LEFT JOIN. Отсутствие платежей превращай в 0 через COALESCE."
+      - "1) Для каждого заказа посчитай paid. 2) Отфильтруй статусы и amount > 0. 3) Оставь, где paid <> amount. 4) diff и сортировка."
+      - "SELECT o.order_id, o.amount, COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.order_id = o.order_id), 0) AS paid, … FROM orders o WHERE … AND COALESCE((SELECT …), 0) <> o.amount ORDER BY o.order_id;"
+      - "Каждому заказу сопоставляется сумма его платежей; COALESCE превращает «платежей нет» в 0, иначе сравнение с NULL выкинуло бы такие заказы. Эталон использует LATERAL, чтобы не повторять подзапрос дважды; равноценно — LEFT JOIN с подзапросом-агрегатом."

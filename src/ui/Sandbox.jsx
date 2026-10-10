@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { execute } from '../game/check.js';
+import { execute, explainQuery } from '../game/check.js';
+import PlanView from './PlanView.jsx';
 import Editor from './Editor.jsx';
 import ResultTable from './ResultTable.jsx';
 import SchemaPanel from './SchemaPanel.jsx';
@@ -24,12 +25,19 @@ export default function Sandbox({ content, dbReady }) {
     setOut(await execute(sql));
     setBusy(false);
   };
+  const plan = async () => {
+    if (busy || !dbReady) return;
+    setBusy(true);
+    const r = await explainQuery(sql);
+    setOut(r.error ? { error: r.error } : { plan: r.plan });
+    setBusy(false);
+  };
   return (
     <div className="sandbox">
       <aside className="ticket-col">
         <div className="sandbox-intro">
           <h1>Песочница</h1>
-          <p>Та же база ShopData, что в заданиях, — 15 таблиц. Экспериментируй сколько угодно: запросы выполняются в режиме только для чтения, данные не изменятся.</p>
+          <p>Та же база ShopData, что в заданиях, — 16 таблиц. Экспериментируй сколько угодно: запросы выполняются в режиме только для чтения, данные не изменятся.</p>
         </div>
         <SchemaPanel schema={content.schema} tables={[]} dbReady={dbReady} title="Схема ShopData" allowAll={false} />
       </aside>
@@ -40,6 +48,7 @@ export default function Sandbox({ content, dbReady }) {
         </div>
         <div className="actions">
           <button className="btn primary" onClick={run} disabled={!dbReady || busy}>{busy ? 'Выполняем…' : 'Выполнить'} <kbd>Ctrl ↵</kbd></button>
+          <button className="btn" onClick={plan} disabled={!dbReady || busy}>Показать план</button>
         </div>
         <div className="output">
           {!out && <p className="muted">Результат появится здесь.</p>}
@@ -47,6 +56,7 @@ export default function Sandbox({ content, dbReady }) {
           {out?.error && (
             <div className="verdict bad"><b>{out.error.title}</b><p>{out.error.explain}</p><pre className="pg-msg">{out.error.message}</pre></div>
           )}
+          {out?.plan && <PlanView root={out.plan} />}
           {out?.rows && (
             <>
               <div className="run-meta">{out.rows.length} стр., {out.ms} мс</div>

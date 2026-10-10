@@ -1,0 +1,406 @@
+level: 10
+grade: Senior
+title: Данные и транзакции
+tag: UPSERT
+book_chapter: 12
+summary: Меняем данные — вставляем, обновляем, удаляем, делаем upsert и ограничения, разбираемся со связями и транзакциями.
+theory: |
+  На этом уровне ты пишешь не запрос, а **скрипт**: одну или несколько команд через точку с запятой. Игра открывает транзакцию, выполняет скрипт, запускает проверочный запрос и откатывает всё обратно. Если любая команда скрипта падает, откатывается весь скрипт — это и есть атомарность транзакции.
+
+  **Вставка:**
+
+  ```sql
+  INSERT INTO warehouses (warehouse_id, name, city)
+  VALUES (100, 'Склад Дон', 'Ростов-на-Дону');
+
+  INSERT INTO stock (warehouse_id, product_id, qty, updated_at)
+  SELECT 100, product_id, 0, '2026-07-01 09:00' FROM products WHERE brand = 'Nova';
+  ```
+
+  **Обновление и удаление** — всегда с WHERE. Без него меняется вся таблица.
+
+  ```sql
+  UPDATE products SET price = round(price * 1.05) WHERE brand = 'Kvant';
+  DELETE FROM reviews WHERE rating = 3 AND text IS NULL;
+  ```
+
+  Обновить по данным другой таблицы: `UPDATE t SET … FROM other WHERE …`, удалить — `DELETE FROM t USING other WHERE …`.
+
+  **RETURNING** возвращает изменённые строки: `UPDATE … RETURNING order_id, customer_id`.
+
+  **Upsert** — вставить, а при конфликте ключа обновить:
+
+  ```sql
+  INSERT INTO stock (warehouse_id, product_id, qty, updated_at)
+  VALUES (3, 1, 10, '2026-07-01 09:00')
+  ON CONFLICT (warehouse_id, product_id)
+  DO UPDATE SET qty = stock.qty + EXCLUDED.qty, updated_at = EXCLUDED.updated_at;
+  ```
+
+  `EXCLUDED` — строка, которую пытались вставить.
+
+  **Ограничения** защищают данные: `PRIMARY KEY`, `UNIQUE`, `NOT NULL`, `CHECK (rating BETWEEN 1 AND 5)`, `FOREIGN KEY`. Добавить ограничение к готовой таблице: `ALTER TABLE reviews ADD CONSTRAINT … CHECK (…)`.
+
+  **Внешние ключи** не дают удалить строку, на которую ссылаются. Удаляйте снизу вверх: сначала зависимые записи, потом главные.
+
+  **JSONB** меняется операторами: `props || '{"promo": true}'` добавляет ключ, `props - 'promo'` удаляет, `jsonb_set(props, '{promo}', 'true')` задаёт значение по пути.
+
+  Игра запрещает в скрипте `BEGIN`, `COMMIT` и `ROLLBACK`: транзакцией управляет она сама.
+tasks:
+  - id: L10-01
+    type: write_dml
+    difficulty: 1
+    customer: Логистика
+    title: Новый склад
+    ticket: Открываем склад в Ростове-на-Дону. Добавьте его — warehouse_id 100, название «Склад Дон», город Ростов-на-Дону.
+    tables: [warehouses]
+    verify: |
+      SELECT warehouse_id, name, city FROM warehouses ORDER BY warehouse_id;
+    ordered: true
+    required: [insert]
+    reference: |
+      INSERT INTO warehouses (warehouse_id, name, city)
+      VALUES (100, 'Склад Дон', 'Ростов-на-Дону');
+    hints:
+      - Нужна одна новая строка в таблице складов.
+      - "INSERT INTO warehouses (колонки) VALUES (значения)."
+      - "1) Перечисли колонки. 2) Передай значения в том же порядке."
+      - "INSERT INTO warehouses (warehouse_id, name, city) VALUES (100, '___', 'Ростов-на-Дону');"
+      - "Явный список колонок защищает от сюрпризов, если в таблицу потом добавят новую колонку или поменяют порядок."
+
+  - id: L10-02
+    type: write_dml
+    difficulty: 2
+    customer: Логистика
+    title: Склад и ассортимент
+    ticket: |
+      Заведите склад 100 «Склад Дон» в Ростове-на-Дону и сразу создайте на нём нулевые остатки для всех активных товаров бренда Nova (qty = 0, updated_at = 2026-07-01 09:00).
+    tables: [warehouses, stock, products]
+    verify: |
+      SELECT w.name, COUNT(s.product_id) AS positions, COALESCE(SUM(s.qty), 0) AS total_qty
+      FROM warehouses AS w
+      LEFT JOIN stock AS s ON s.warehouse_id = w.warehouse_id
+      WHERE w.warehouse_id = 100
+      GROUP BY w.name;
+    required: [insert]
+    reference: |
+      INSERT INTO warehouses (warehouse_id, name, city) VALUES (100, 'Склад Дон', 'Ростов-на-Дону');
+      INSERT INTO stock (warehouse_id, product_id, qty, updated_at)
+      SELECT 100, product_id, 0, '2026-07-01 09:00'
+      FROM products
+      WHERE brand = 'Nova' AND is_active;
+    hints:
+      - Две команды — сначала склад, потом остатки. Порядок важен из-за внешнего ключа.
+      - "INSERT … SELECT вставляет столько строк, сколько вернёт SELECT."
+      - "1) INSERT склада. 2) INSERT INTO stock … SELECT 100, product_id, 0, '2026-07-01 09:00' FROM products WHERE …"
+      - "INSERT INTO stock (warehouse_id, product_id, qty, updated_at) SELECT 100, product_id, 0, '2026-07-01 09:00' FROM products WHERE brand = 'Nova' AND ___;"
+      - "stock.warehouse_id ссылается на warehouses, поэтому склад должен существовать раньше остатков. Обе команды выполняются в одной транзакции: если вторая упадёт, откатится и первая."
+
+  - id: L10-03
+    type: write_dml
+    difficulty: 1
+    customer: Каталог
+    title: Подорожание Kvant
+    ticket: Поставщик Kvant поднял цены. Увеличьте цену всех товаров бренда Kvant на 5% с округлением до рубля.
+    tables: [products]
+    verify: |
+      SELECT product_id, price FROM products WHERE brand = 'Kvant' ORDER BY product_id;
+    ordered: true
+    required: [update]
+    reference: |
+      UPDATE products
+      SET price = round(price * 1.05)
+      WHERE brand = 'Kvant';
+    hints:
+      - Меняем существующие строки — значит UPDATE, и обязательно с условием.
+      - "SET price = round(price * 1.05)."
+      - "1) UPDATE products. 2) SET с новым выражением. 3) WHERE по бренду."
+      - "UPDATE products SET price = round(price * 1.05) WHERE brand = '___';"
+      - "В SET справа можно использовать старое значение колонки. round без второго аргумента округляет до целого — до рубля."
+
+  - id: L10-04
+    type: write_dml
+    difficulty: 2
+    customer: Каталог
+    title: Снять с продажи
+    ticket: Снимите с продажи (is_active = false) все товары, которые ни разу не продавались.
+    tables: [products, order_items]
+    verify: |
+      SELECT product_id FROM products WHERE NOT is_active ORDER BY product_id;
+    ordered: true
+    required: [update]
+    reference: |
+      UPDATE products AS p
+      SET is_active = false
+      WHERE NOT EXISTS (SELECT 1 FROM order_items AS oi WHERE oi.product_id = p.product_id);
+    hints:
+      - Условие обновления зависит от другой таблицы.
+      - "WHERE NOT EXISTS (SELECT 1 FROM order_items …) прямо в UPDATE."
+      - "1) UPDATE products. 2) SET is_active = false. 3) WHERE NOT EXISTS продаж."
+      - "UPDATE products AS p SET is_active = false WHERE NOT EXISTS (SELECT 1 FROM order_items AS oi WHERE oi.product_id = ___);"
+      - "В WHERE у UPDATE можно писать любые подзапросы. Уже неактивные товары останутся неактивными — проверочный запрос покажет и их."
+
+  - id: L10-05
+    type: write_dml
+    difficulty: 1
+    customer: Качество
+    title: Пустые тройки
+    ticket: Удалите неинформативные отзывы — с оценкой 3 и без текста.
+    tables: [reviews]
+    verify: |
+      SELECT COUNT(*) AS reviews, COUNT(*) FILTER (WHERE rating = 3) AS rating3 FROM reviews;
+    required: [delete]
+    reference: |
+      DELETE FROM reviews
+      WHERE rating = 3 AND text IS NULL;
+    hints:
+      - Удаление строк по условию.
+      - "DELETE FROM reviews WHERE …"
+      - "1) Оценка 3. 2) text IS NULL. 3) Оба условия через AND."
+      - "DELETE FROM reviews WHERE rating = 3 AND text IS ___;"
+      - "DELETE без WHERE очистил бы всю таблицу. Проверочный запрос считает оставшиеся отзывы и тройки среди них."
+
+  - id: L10-06
+    type: write_dml
+    difficulty: 3
+    customer: Безопасность
+    title: Мёртвые души
+    ticket: >-
+      Нужно удалить аккаунты, зарегистрированные до 2024 года и не сделавшие ни одного заказа. Скрипт ниже падает с ошибкой внешнего ключа. Почините: удалите вместе с клиентами их события и участие в A/B-тестах.
+    tables: [customers, orders, events, ab_assignments]
+    start_sql: |
+      DELETE FROM customers AS c
+      WHERE c.registered_at < '2024-01-01'
+        AND NOT EXISTS (SELECT 1 FROM orders AS o WHERE o.customer_id = c.customer_id);
+    verify: |
+      SELECT (SELECT COUNT(*) FROM customers) AS customers,
+             (SELECT COUNT(*) FROM events) AS events,
+             (SELECT COUNT(*) FROM ab_assignments) AS ab;
+    required: [delete]
+    reference: |
+      DELETE FROM ab_assignments AS a
+      USING customers AS c
+      WHERE a.customer_id = c.customer_id
+        AND c.registered_at < '2024-01-01'
+        AND NOT EXISTS (SELECT 1 FROM orders AS o WHERE o.customer_id = c.customer_id);
+      DELETE FROM events AS e
+      USING customers AS c
+      WHERE e.customer_id = c.customer_id
+        AND c.registered_at < '2024-01-01'
+        AND NOT EXISTS (SELECT 1 FROM orders AS o WHERE o.customer_id = c.customer_id);
+      DELETE FROM customers AS c
+      WHERE c.registered_at < '2024-01-01'
+        AND NOT EXISTS (SELECT 1 FROM orders AS o WHERE o.customer_id = c.customer_id);
+    hints:
+      - На этих клиентов ссылаются строки других таблиц. Прочитай, какую таблицу назвала ошибка.
+      - "events и ab_assignments ссылаются на customers. Их строки нужно удалить раньше."
+      - "1) DELETE из ab_assignments для этих клиентов. 2) DELETE из events. 3) DELETE клиентов. Условие отбора клиентов одинаковое во всех трёх."
+      - "DELETE FROM events AS e USING customers AS c WHERE e.customer_id = c.customer_id AND c.registered_at < '2024-01-01' AND NOT EXISTS (…);"
+      - "Внешний ключ запрещает оставить ссылки «в никуда». Удаляем снизу вверх: зависимые таблицы, затем главную. Альтернатива — ON DELETE CASCADE в определении ключа, но это решение о схеме, а не о скрипте."
+
+  - id: L10-07
+    type: write_dml
+    difficulty: 2
+    customer: Логистика
+    title: Поставка на склад
+    ticket: |
+      На склад 3 пришла поставка: по 10 штук товаров с product_id от 1 до 6. Если позиция на складе уже есть — прибавьте 10 к остатку, если нет — создайте её с остатком 10. Время обновления — 2026-07-01 09:00.
+    tables: [stock]
+    verify: |
+      SELECT product_id, qty, updated_at FROM stock WHERE warehouse_id = 3 AND product_id <= 6 ORDER BY product_id;
+    ordered: true
+    required: [on_conflict]
+    reference: |
+      INSERT INTO stock (warehouse_id, product_id, qty, updated_at)
+      SELECT 3, g, 10, '2026-07-01 09:00' FROM generate_series(1, 6) AS g
+      ON CONFLICT (warehouse_id, product_id)
+      DO UPDATE SET qty = stock.qty + EXCLUDED.qty, updated_at = EXCLUDED.updated_at;
+    hints:
+      - Одна команда должна и вставлять новые строки, и обновлять существующие.
+      - "INSERT … ON CONFLICT (warehouse_id, product_id) DO UPDATE SET …"
+      - "1) Вставь 6 строк (VALUES или generate_series). 2) При конфликте ключа прибавь EXCLUDED.qty к stock.qty."
+      - "ON CONFLICT (warehouse_id, product_id) DO UPDATE SET qty = stock.qty + EXCLUDED.___, updated_at = EXCLUDED.updated_at"
+      - "EXCLUDED — строка, которую не удалось вставить из-за конфликта. Upsert атомарен: нет гонки между «проверить, есть ли строка» и «вставить»."
+
+  - id: L10-08
+    type: write_dml
+    difficulty: 2
+    customer: Поддержка
+    title: Зависшие заказы
+    ticket: Отмените заказы, которые висят в статусе new с момента до 30 июня 2026 года, и верните список отменённых — order_id и customer_id.
+    tables: [orders]
+    check: returning
+    expected_columns: [order_id, customer_id]
+    required: [returning]
+    reference: |
+      UPDATE orders
+      SET status = 'cancelled'
+      WHERE status = 'new' AND created_at < '2026-06-30'
+      RETURNING order_id, customer_id;
+    hints:
+      - Нужно и изменить строки, и сразу получить их список.
+      - "RETURNING в конце UPDATE возвращает изменённые строки."
+      - "1) UPDATE со статусом cancelled. 2) WHERE на статус и дату. 3) RETURNING order_id, customer_id."
+      - "UPDATE orders SET status = 'cancelled' WHERE status = 'new' AND created_at < '2026-06-30' ___ order_id, customer_id;"
+      - "RETURNING избавляет от второго запроса и гарантирует, что ты видишь ровно изменённые строки — даже если параллельно кто-то менял таблицу."
+
+  - id: L10-09
+    type: write_dml
+    difficulty: 2
+    customer: Качество
+    title: Оценка только от 1 до 5
+    ticket: Защитите таблицу отзывов от мусорных оценок — добавьте ограничение, разрешающее rating только от 1 до 5 включительно.
+    tables: [reviews]
+    verify: |
+      SELECT pg_get_constraintdef(oid) AS definition
+      FROM pg_constraint
+      WHERE conrelid = 'reviews'::regclass AND contype = 'c';
+    expected_columns: [definition]
+    reference: |
+      ALTER TABLE reviews
+      ADD CONSTRAINT reviews_rating_check CHECK (rating BETWEEN 1 AND 5);
+    hints:
+      - Ограничение добавляется к существующей таблице через ALTER TABLE.
+      - "ADD CONSTRAINT имя CHECK (условие)."
+      - "1) ALTER TABLE reviews. 2) ADD CONSTRAINT с понятным именем. 3) CHECK с диапазоном."
+      - "ALTER TABLE reviews ADD CONSTRAINT reviews_rating_check CHECK (rating ___ 1 AND 5);"
+      - "PostgreSQL проверит все существующие строки при добавлении CHECK; если найдётся нарушение, команда упадёт. Проверочный запрос читает определение из системного каталога pg_constraint."
+
+  - id: L10-10
+    type: write_dml
+    difficulty: 2
+    customer: Маркетинг
+    title: Метка акции
+    ticket: Отметьте все события сессии 777 как пришедшие из промоакции — добавьте в props ключ promo со значением true, сохранив остальные ключи.
+    tables: [events]
+    verify: |
+      SELECT event_id, props FROM events WHERE session_id = 777 ORDER BY event_id;
+    ordered: true
+    required: [update]
+    reference: |
+      UPDATE events
+      SET props = props || '{"promo": true}'
+      WHERE session_id = 777;
+    hints:
+      - Нужно дописать ключ в JSONB, не затирая остальные.
+      - "Оператор || сливает два jsonb-объекта."
+      - "1) UPDATE events. 2) SET props = props || '{…}'. 3) WHERE по сессии."
+      - "SET props = props || '{\"promo\": ___}'"
+      - "|| объединяет объекты, при совпадении ключей побеждает правый. jsonb_set(props, '{promo}', 'true') даёт тот же результат."
+
+  - id: L10-11
+    type: write_dml
+    difficulty: 1
+    customer: Логистика
+    title: Отгрузили всё
+    ticket: Логист хотел перевести заказы 1001 и 1002 в статус shipped, но скрипт изменил статус всем заказам. Почините.
+    tables: [orders]
+    start_sql: |
+      UPDATE orders SET status = 'shipped';
+    verify: |
+      SELECT status, COUNT(*) AS orders_cnt FROM orders GROUP BY status ORDER BY status;
+    ordered: true
+    required: [update]
+    reference: |
+      UPDATE orders SET status = 'shipped' WHERE order_id IN (1001, 1002);
+    hints:
+      - Чего не хватает в UPDATE, чтобы он трогал только две строки?
+      - "Без WHERE обновляются все строки таблицы."
+      - "1) Добавь WHERE. 2) Перечисли два номера заказа."
+      - "UPDATE orders SET status = 'shipped' WHERE order_id ___ (1001, 1002);"
+      - "UPDATE и DELETE без WHERE — частая причина аварий. Хорошая привычка — сначала выполнить SELECT с тем же WHERE и посмотреть, какие строки попадут под изменение."
+
+  - id: L10-12
+    type: write_dml
+    difficulty: 2
+    customer: Финансы
+    title: Чистка отменённых
+    ticket: Удалите позиции (order_items) у всех отменённых заказов — сами заказы оставьте.
+    tables: [order_items, orders]
+    verify: |
+      SELECT COUNT(*) AS items,
+             COUNT(*) FILTER (WHERE o.status = 'cancelled') AS cancelled_items
+      FROM order_items AS oi JOIN orders AS o ON o.order_id = oi.order_id;
+    required: [delete]
+    reference: |
+      DELETE FROM order_items AS oi
+      USING orders AS o
+      WHERE o.order_id = oi.order_id AND o.status = 'cancelled';
+    hints:
+      - Условие удаления лежит в другой таблице.
+      - "DELETE FROM order_items USING orders WHERE …"
+      - "1) DELETE из order_items. 2) USING orders. 3) Связь по order_id и статус cancelled."
+      - "DELETE FROM order_items AS oi USING orders AS o WHERE o.order_id = oi.order_id AND o.status = '___';"
+      - "USING подключает к DELETE другие таблицы, как FROM в UPDATE. Равноценно — WHERE order_id IN (SELECT order_id FROM orders WHERE status = 'cancelled')."
+
+  - id: L10-13
+    type: write_query
+    difficulty: 1
+    customer: Продукт
+    title: Просмотры брендов
+    ticket: Сколько просмотров (event_type = 'view') набрали товары каждого бренда? Товар события лежит в props под ключом product_id. Колонки brand и views.
+    tables: [events, products]
+    expected_columns: [brand, views]
+    check_column_names: true
+    required: [join]
+    reference: |
+      SELECT p.brand, COUNT(*) AS views
+      FROM events AS e
+      JOIN products AS p ON p.product_id = (e.props->>'product_id')::int
+      WHERE e.event_type = 'view'
+      GROUP BY p.brand;
+    hints:
+      - Чтобы соединить событие с товаром, достань id из JSONB и приведи к числу.
+      - "(props->>'product_id')::int."
+      - "1) Фильтр view. 2) JOIN products по извлечённому id. 3) Группировка по бренду."
+      - "JOIN products AS p ON p.product_id = (e.props->>'product_id')::___"
+      - "->> возвращает текст, а product_id — число, поэтому нужно приведение типа. Для частых запросов по такому ключу делают индекс по выражению."
+
+  - id: L10-14
+    type: write_dml
+    boss: true
+    difficulty: 3
+    customer: CRM
+    title: "Инцидент: дубли клиентов"
+    ticket: |
+      В базе десятки дублей: один человек зарегистрирован несколько раз с одним email в разном регистре. Склейте их без потери истории.
+      Для каждого lower(email) главный аккаунт — самый ранний по registered_at (при равенстве — с меньшим customer_id). Перенесите на главный аккаунт заказы, отзывы, события и участие в A/B-тестах дублей (если после склейки у человека окажется несколько записей одного эксперимента, оставьте одну — главного аккаунта, а если её нет, самого раннего дубля), затем удалите аккаунты-дубли.
+      Проверочный запрос посчитает клиентов, уникальные email и проверит, что ни одна запись не потеряла владельца.
+    tables: [customers, orders, reviews, events, ab_assignments]
+    verify: |
+      SELECT (SELECT COUNT(*) FROM customers) AS customers,
+             (SELECT COUNT(DISTINCT lower(email)) FROM customers) AS emails,
+             (SELECT COUNT(*) FROM orders) AS orders,
+             (SELECT SUM(customer_id::bigint * order_id) FROM orders) AS orders_owner_sum,
+             (SELECT SUM(customer_id::bigint * review_id) FROM reviews) AS reviews_owner_sum,
+             (SELECT SUM(customer_id::bigint * event_id) FROM events) AS events_owner_sum,
+             (SELECT COUNT(*) FROM ab_assignments) AS ab_rows;
+    required: [update, delete]
+    reference: |
+      CREATE TEMP TABLE merge_map AS
+      SELECT customer_id,
+             FIRST_VALUE(customer_id) OVER (PARTITION BY lower(email) ORDER BY registered_at, customer_id) AS keep_id
+      FROM customers;
+      DELETE FROM merge_map WHERE customer_id = keep_id;
+      UPDATE orders AS o SET customer_id = m.keep_id FROM merge_map AS m WHERE o.customer_id = m.customer_id;
+      UPDATE reviews AS r SET customer_id = m.keep_id FROM merge_map AS m WHERE r.customer_id = m.customer_id;
+      UPDATE events AS e SET customer_id = m.keep_id FROM merge_map AS m WHERE e.customer_id = m.customer_id;
+      DELETE FROM ab_assignments AS a
+      USING (
+        SELECT x.customer_id, x.experiment,
+               ROW_NUMBER() OVER (
+                 PARTITION BY COALESCE(m.keep_id, x.customer_id), x.experiment
+                 ORDER BY (m.customer_id IS NOT NULL), x.customer_id
+               ) AS rn
+        FROM ab_assignments AS x
+        LEFT JOIN merge_map AS m ON m.customer_id = x.customer_id
+      ) AS d
+      WHERE a.customer_id = d.customer_id AND a.experiment = d.experiment AND d.rn > 1;
+      UPDATE ab_assignments AS a SET customer_id = m.keep_id FROM merge_map AS m WHERE a.customer_id = m.customer_id;
+      DELETE FROM customers AS c USING merge_map AS m WHERE c.customer_id = m.customer_id;
+    hints:
+      - "Сначала построй таблицу соответствия «дубль → главный аккаунт». Дальше каждая таблица переносится одним UPDATE … FROM по этой таблице."
+      - "Соответствие даёт FIRST_VALUE(customer_id) OVER (PARTITION BY lower(email) ORDER BY registered_at, customer_id). Сохрани его во временную таблицу CREATE TEMP TABLE … AS SELECT — она исчезнет вместе с транзакцией."
+      - "1) merge_map и удалить из неё главные аккаунты. 2) UPDATE orders, reviews, events. 3) В ab_assignments сначала удалить лишние записи: в группе «главный + дубли» на эксперимент должна остаться одна (ROW_NUMBER по владельцу и эксперименту). Потом перенести остальные. 4) DELETE клиентов-дублей."
+      - "UPDATE orders AS o SET customer_id = m.keep_id FROM merge_map AS m WHERE o.customer_id = m.customer_id;"
+      - "Склейка дублей — это миграция данных: таблица соответствия, перенос ссылок, разрешение конфликтов уникальности, удаление. У ab_assignments ключ (customer_id, experiment), поэтому две записи одного эксперимента в одной группе дали бы конфликт — лишние удаляем до переноса, причём групп с тремя аккаунтами это тоже касается. Всё выполняется в одной транзакции и либо проходит целиком, либо не меняет ничего."

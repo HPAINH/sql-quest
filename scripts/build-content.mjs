@@ -3,9 +3,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import * as yaml from 'js-yaml';
 import { PGlite, types } from '@electric-sql/pglite';
+import { vector } from '@electric-sql/pglite-pgvector';
 import { generate, loadInto, TABLE_ORDER } from './dataset.mjs';
 import { canonRows, fingerprint, hide, rowKey, sortedKeys, keySeq } from '../src/engine/canon.js';
 import { guard, features } from '../src/engine/sqlscan.js';
+import { parsePlan, checkPlan } from '../src/engine/plan.js';
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
 const errors = [];
@@ -16,18 +18,49 @@ const raw = {};
 for (const v of Object.values(types)) if (typeof v === 'number') raw[v] = (x) => x;
 
 const t0 = Date.now();
-const db = new PGlite({ parsers: raw });
+const db = new PGlite({ parsers: raw, extensions: { vector } });
 await loadInto(db, 'shop', generate(1, 1));
 await loadInto(db, 'shop_h', generate(2, 0.85));
 await db.exec('ANALYZE;');
-await db.exec('ALTER DATABASE postgres SET search_path TO shop;');
+await db.exec('ALTER DATABASE postgres SET search_path TO shop, public;');
 console.log(`datasets loaded in ${Date.now() - t0} ms`);
 
 async function run(sql, schema = 'shop') {
-  await db.exec(`BEGIN READ ONLY; SET LOCAL search_path TO ${schema};`);
+  await db.exec(`BEGIN READ ONLY; SET LOCAL search_path TO ${schema}, public;`);
   try {
     const r = await db.query(sql, [], { rowMode: 'array' });
     return { fields: r.fields, rows: canonRows(r.fields, r.rows) };
+  } catch (e) {
+    return { error: { code: e.code, message: e.message } };
+  } finally {
+    await db.exec('ROLLBACK;');
+  }
+}
+
+let dirty = false;
+async function explain(sql, schema = 'shop') {
+  if (dirty) { await db.exec('VACUUM FULL'); await db.exec('ANALYZE'); dirty = false; }
+  await db.exec(`BEGIN READ ONLY; SET LOCAL search_path TO ${schema}, public;`);
+  try {
+    const r = await db.query(`EXPLAIN (FORMAT JSON) ${sql}`, [], { rowMode: 'array' });
+    return parsePlan(r.rows[0][0]);
+  } catch (e) {
+    return { error: { code: e.code, message: e.message } };
+  } finally {
+    await db.exec('ROLLBACK;');
+  }
+}
+
+async function runScript(script, schema, { verify, probe } = {}) {
+  dirty = true;
+  await db.exec(`BEGIN; SET LOCAL search_path TO ${schema}, public;`);
+  try {
+    const results = await db.exec(script, { rowMode: 'array' });
+    const last = results[results.length - 1];
+    const out = { last: last && last.fields.length ? { fields: last.fields, rows: canonRows(last.fields, last.rows.map((r) => (Array.isArray(r) ? r : last.fields.map((f) => r[f.name])))) } : null };
+    if (verify) { const v = await db.query(verify, [], { rowMode: 'array' }); out.verify = { fields: v.fields, rows: canonRows(v.fields, v.rows) }; }
+    if (probe) { const p = await db.query(`EXPLAIN (FORMAT JSON) ${probe}`, [], { rowMode: 'array' }); out.plan = parsePlan(p.rows[0][0]); }
+    return out;
   } catch (e) {
     return { error: { code: e.code, message: e.message } };
   } finally {
@@ -56,7 +89,7 @@ for (const t of schema) for (const c of t.columns) if (!c.about) warn.push(`sche
 
 const levelFiles = fs.readdirSync(path.join(ROOT, 'content/levels')).filter((f) => f.endsWith('.yaml')).sort();
 const levels = [];
-const TYPES = new Set(['write_query', 'target_table', 'fix_bug', 'predict', 'fill_blank', 'choose']);
+const TYPES = new Set(['write_query', 'target_table', 'fix_bug', 'predict', 'fill_blank', 'choose', 'optimize', 'write_dml']);
 const seenIds = new Set();
 
 const shuffle = (arr, seed) => {
@@ -104,6 +137,55 @@ for (const file of levelFiles) {
       const options = shuffle([...opts].slice(0, 4), id);
       Object.assign(task, { query: t.query.trim(), ask: t.ask, options, answer: hide(JSON.stringify([options.indexOf(truth)])) });
       task.solution = hide(JSON.stringify({ sql: t.query.trim(), explain: t.hints[4], answer: truth }));
+      out.tasks.push(task);
+      continue;
+    }
+
+    if (t.type === 'write_dml') {
+      if (!t.reference) { fail(id, 'нет reference'); continue; }
+      const g = guard(t.reference, 'write');
+      if (g) fail(id, `reference не проходит guard: ${g}`);
+      if (!t.verify && t.check !== 'returning' && !t.plan) fail(id, 'нужен verify, check: returning или plan');
+      const opts = { verify: t.verify, probe: t.plan?.probe };
+      const pub = await runScript(t.reference, 'shop', opts);
+      const hid = await runScript(t.reference, 'shop_h', opts);
+      if (pub.error) { fail(id, `reference падает: ${pub.error.message}`); continue; }
+      if (hid.error) { fail(id, `reference падает на скрытом датасете: ${hid.error.message}`); continue; }
+      const ordered = !!t.ordered;
+      const req = features(t.reference);
+      for (const r of task.required) if (!req.has(r)) fail(id, `reference не содержит обязательную конструкцию ${r}`);
+      Object.assign(task, { check: t.check || (t.verify ? 'verify' : 'plan'), verify: t.verify ? t.verify.trim() : null, start_sql: t.start_sql ? t.start_sql.trim() : '' });
+      if (task.check !== 'plan') {
+        const src = task.check === 'returning' ? 'last' : 'verify';
+        const P = pub[src], H = hid[src];
+        if (!P || !P.rows.length) fail(id, `${src} пустой на публичном датасете`);
+        if (!H || !H.rows.length) fail(id, `${src} пустой на скрытом датасете`);
+        if (!P || !H) continue;
+        const names = P.fields.map((f) => f.name);
+        if (t.expected_columns && t.expected_columns.join(',') !== names.join(',')) fail(id, `expected_columns ${t.expected_columns} ≠ ${names}`);
+        if (task.check === 'verify') {
+          const before = await run(t.verify);
+          if (sameResult(before, P, ordered)) fail(id, 'verify до изменений уже совпадает с ожидаемым — задача ничего не проверяет');
+        }
+        task.expected = { columns: names, check_names: !!t.check_column_names, ordered, key_idx: [], rows: P.rows, hidden: await fingerprint(H.rows, names.length, ordered, []) };
+      }
+      if (t.plan) {
+        const spec = { require: t.plan.require || [], forbid: t.plan.forbid || [] };
+        const pc = checkPlan(pub.plan, spec);
+        if (!pc.ok) fail(id, `план после reference не проходит: ${pc.message}`);
+        const base = await explain(t.plan.probe);
+        if (base.error) fail(id, `probe падает: ${base.error.message}`);
+        else if (checkPlan(base, spec).ok) fail(id, 'план и без скрипта уже проходит — задача ничего не проверяет');
+        task.plan = { probe: t.plan.probe.trim(), ...spec };
+      }
+      if (t.start_sql) {
+        const st = await runScript(t.start_sql, 'shop', opts);
+        if (!st.error && task.expected) {
+          const src = task.check === 'returning' ? 'last' : 'verify';
+          if (st[src] && sameResult(st[src], pub[src], ordered)) fail(id, 'start_sql уже даёт верный результат');
+        }
+      }
+      task.solution = hide(JSON.stringify({ sql: t.reference.trim(), explain: t.hints[4] }));
       out.tasks.push(task);
       continue;
     }
@@ -158,6 +240,7 @@ for (const file of levelFiles) {
         if (sameResult(a, pub, ordered) && sameResult(b, hid, ordered)) correct.push(i);
       }
       if (!correct.length) fail(id, 'ни один вариант не совпал с эталоном');
+      if (t.expect_correct && t.expect_correct.join(',') !== correct.join(',')) fail(id, `верные варианты ${correct} ≠ ожидаемым ${t.expect_correct}`);
       if (correct.length === t.options.length) fail(id, 'все варианты верны');
       Object.assign(task, { options: t.options.map((s) => s.trim()), multi: correct.length > 1, answer: hide(JSON.stringify(correct)) });
       task.solution = hide(JSON.stringify({ sql: t.reference.trim(), explain: t.hints[4], correct }));
@@ -170,6 +253,24 @@ for (const file of levelFiles) {
       const br = await run(t.broken_query);
       if (!br.error && sameResult(br, pub, ordered)) fail(id, 'broken_query даёт тот же результат, что и эталон');
       task.start_sql = t.broken_query.trim();
+    }
+    if (t.type === 'optimize') {
+      if (!t.start_sql || !t.plan) fail(id, 'optimize требует start_sql и plan');
+      else {
+        const slow = await run(t.start_sql);
+        if (!sameResult(slow, pub, ordered)) fail(id, 'start_sql должен давать верный результат — его нужно только ускорить');
+        const slowPlan = await explain(t.start_sql);
+        const refPlan = await explain(t.reference);
+        const spec = { require: t.plan.require || [], forbid: t.plan.forbid || [] };
+        const probeSpec = { ...spec };
+        if (t.plan.max_cost_ratio) probeSpec.max_cost = Math.round(slowPlan['Total Cost'] * t.plan.max_cost_ratio * 100) / 100;
+        const rc = checkPlan(refPlan, probeSpec);
+        if (!rc.ok) fail(id, `план эталона не проходит: ${rc.message}`);
+        if (checkPlan(slowPlan, probeSpec).ok) fail(id, 'медленный запрос уже проходит план');
+        task.plan = t.plan.max_cost_ratio ? { ...spec, max_cost_ratio: t.plan.max_cost_ratio } : spec;
+        task.start_cost = slowPlan['Total Cost'];
+        task.start_sql = t.start_sql.trim();
+      }
     }
     if (t.type === 'fill_blank') {
       if (!t.template || !t.template.includes('___')) fail(id, 'template без пропусков ___');
@@ -193,7 +294,7 @@ const ALPH = '23456789ABCDEFGHJKMNPQRSTUVWXYZ';
 const code4 = (n) => { let h = fnv(SECRET + ':' + n), s = ''; for (let i = 0; i < 4; i++) { s += ALPH[h % ALPH.length]; h = Math.floor(h / ALPH.length); } return s; };
 const passwords = levels.map((l) => (l.level === 0 ? null : `${l.tag}-${code4(l.level)}`));
 
-const roadmap = [
+const roadmapAll = [
   { level: 5, grade: 'Junior', title: 'Подзапросы и множества' },
   { level: 6, grade: 'Middle', title: 'CTE и рекурсия' },
   { level: 7, grade: 'Middle', title: 'Оконные функции I' },
@@ -202,6 +303,7 @@ const roadmap = [
   { level: 10, grade: 'Senior', title: 'Данные и транзакции' },
   { level: 11, grade: 'Lead', title: 'Производительность и ML' },
 ];
+const roadmap = roadmapAll.filter((r) => !levels.some((l) => l.level === r.level));
 
 if (warn.length) console.log('Предупреждения:\n  ' + warn.join('\n  '));
 if (errors.length) {
@@ -217,9 +319,15 @@ const nTasks = levels.reduce((s, l) => s + l.tasks.length, 0);
 console.log(`✓ ${levels.length} уровней, ${nTasks} задач, все эталоны прошли на обоих датасетах`);
 
 if (!process.argv.includes('--no-dump')) {
-  const blob = await db.dumpDataDir('gzip');
+  const clean = new PGlite({ extensions: { vector } });
+  await loadInto(clean, 'shop', generate(1, 1));
+  await loadInto(clean, 'shop_h', generate(2, 0.85));
+  await clean.exec('ANALYZE;');
+  await clean.exec('ALTER DATABASE postgres SET search_path TO shop, public;');
+  const blob = await clean.dumpDataDir('gzip');
   fs.mkdirSync(path.join(ROOT, 'public/data'), { recursive: true });
   fs.writeFileSync(path.join(ROOT, 'public/data/shop.tar.gz'), Buffer.from(await blob.arrayBuffer()));
   console.log(`✓ дамп базы: ${(blob.size / 1e6).toFixed(1)} МБ`);
+  await clean.close();
 }
 await db.close();

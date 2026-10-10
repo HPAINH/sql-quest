@@ -119,12 +119,18 @@ function fromB32(str) {
 
 export const taskOrder = (content) => content.levels.flatMap((l) => l.tasks.map((t) => t.id));
 
+const recByte = (r) => (r?.solved ? 1 | ((r.stars & 3) << 1) | ((Math.min(r.hints, 5) & 7) << 3) : 0);
+
 export function encodeSave(content, p) {
   const ids = taskOrder(content);
-  const bytes = [0x51, 1, p.unlocked & 255, (ids.length >> 8) & 255, ids.length & 255];
-  for (const id of ids) {
-    const r = p.tasks[id];
-    bytes.push(r?.solved ? 1 | ((r.stars & 3) << 1) | ((Math.min(r.hints, 5) & 7) << 3) : 0);
+  const bytes = [0x51, 2, p.unlocked & 255, (ids.length >> 8) & 255, ids.length & 255];
+  let i = 0;
+  while (i < ids.length) {
+    const v = recByte(p.tasks[ids[i]]);
+    let run = 1;
+    while (i + run < ids.length && run < 255 && recByte(p.tasks[ids[i + run]]) === v) run++;
+    bytes.push(v, run);
+    i += run;
   }
   const c = crc16(bytes);
   bytes.push((c >> 8) & 255, c & 255);
@@ -134,17 +140,26 @@ export function encodeSave(content, p) {
 export function decodeSave(content, code) {
   let bytes;
   try { bytes = fromB32(code); } catch { throw new Error('В коде есть недопустимые символы. Скопируй его целиком ещё раз.'); }
-  if (bytes.length < 7) throw new Error('Код слишком короткий — похоже, скопирован не полностью.');
+  if (bytes.length < 7 || bytes[0] !== 0x51) throw new Error('Это не код сохранения SQL Quest — или он скопирован не полностью.');
+  const version = bytes[1];
   const n = (bytes[3] << 8) | bytes[4];
-  const body = bytes.slice(0, 5 + n);
-  const crc = (bytes[5 + n] << 8) | bytes[6 + n];
-  if (bytes[0] !== 0x51 || body.length !== 5 + n || crc16(body) !== crc) throw new Error('Код повреждён: не сходится контрольная сумма. Проверь, что он скопирован без изменений.');
-  if (bytes[1] !== 1) throw new Error('Этот код сделан в другой версии игры.');
+  let values = [];
+  let end;
+  if (version === 1) {
+    end = 5 + n;
+    values = bytes.slice(5, end);
+  } else if (version === 2) {
+    let k = 5;
+    while (values.length < n && k + 1 < bytes.length) { for (let r = 0; r < bytes[k + 1]; r++) values.push(bytes[k]); k += 2; }
+    end = k;
+  } else throw new Error('Этот код сделан в более новой версии игры. Обнови страницу.');
+  const crc = (bytes[end] << 8) | bytes[end + 1];
+  if (values.length !== n || end + 2 > bytes.length || crc16(bytes.slice(0, end)) !== crc) throw new Error('Код повреждён: не сходится контрольная сумма. Проверь, что он скопирован без изменений.');
   const ids = taskOrder(content);
   const p = emptyProgress();
   p.unlocked = bytes[2];
   for (let i = 0; i < Math.min(n, ids.length); i++) {
-    const b = body[5 + i];
+    const b = values[i];
     if (b & 1) p.tasks[ids[i]] = { solved: true, stars: (b >> 1) & 3, hints: (b >> 3) & 7, attempts: 1, wrong: 0 };
   }
   return p;

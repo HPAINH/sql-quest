@@ -1,0 +1,436 @@
+level: 11
+grade: Lead
+title: Производительность и ML
+tag: EXPLAIN
+book_chapter: 13
+summary: Читаем планы и ускоряем запросы индексами, собираем признаки для модели без утечки из будущего и ищем похожие товары по векторам.
+theory: |
+  **EXPLAIN** показывает план — как PostgreSQL собирается выполнить запрос. `EXPLAIN ANALYZE` ещё и выполняет его, показывая реальное время.
+
+  - `Seq Scan` — чтение всей таблицы;
+  - `Index Scan` / `Index Only Scan` — поиск по индексу;
+  - `Bitmap Heap Scan` + `Bitmap Index Scan` — сначала индекс собирает адреса строк, потом таблица читается пачкой;
+  - `Hash Join`, `Nested Loop`, `Merge Join` — способы соединения.
+
+  **Cost** — оценка стоимости в условных единицах (примерно «чтение одной страницы последовательно = 1»). Сравнивайте её между вариантами одного запроса. Оценки берутся из статистики, которую собирает `ANALYZE`.
+
+  **Индекс работает, только если условие «sargable»** — колонка стоит в сравнении как есть:
+
+  - `created_at::date = '2026-06-15'` — индекс по created_at не поможет;
+  - `created_at >= '2026-06-15' AND created_at < '2026-06-16'` — поможет;
+  - `EXTRACT(YEAR FROM created_at) = 2025` — нет, диапазон дат — да;
+  - `customer_id::text = '42'` — нет, `customer_id = 42` — да.
+
+  Если без функции не обойтись, создайте **индекс по выражению**: `CREATE INDEX ON customers (lower(email))`.
+
+  Составной индекс `(a, b)` помогает условиям по `a` и по `a` вместе с `b`, но не по одному `b`.
+
+  **Коррелированные подзапросы в SELECT** выполняются для каждой строки. Агрегат один раз в CTE с последующим JOIN почти всегда дешевле.
+
+  **Признаки для модели.** Все признаки считаются только по данным **до даты среза**, целевая переменная — только **после**. Если признак видит будущее (утечка, leakage), модель отлично выглядит на истории и проваливается в бою.
+
+  **Разбиение train/test** должно быть воспроизводимым: `abs(hashtext(customer_id::text)) % 10 < 8` всегда отправляет клиента в одну и ту же выборку.
+
+  **pgvector** хранит векторы (`vector(8)`) и ищет ближайшие: `<->` — евклидово расстояние, `<=>` — косинусное. На больших таблицах ускоряется индексами HNSW или IVFFlat; на 500 товарах планировщик честно выбирает полный перебор.
+tasks:
+  - id: L11-01
+    type: optimize
+    difficulty: 2
+    customer: Платформа
+    title: Один день без полного прохода
+    ticket: Отчёт «заказы за 15 июня 2026» читает всю таблицу orders, хотя по created_at есть индекс. Перепишите запрос так, чтобы он использовал индекс, — результат должен остаться тем же (order_id, amount).
+    tables: [orders]
+    expected_columns: [order_id, amount]
+    start_sql: |
+      SELECT order_id, amount
+      FROM orders
+      WHERE created_at::date = '2026-06-15';
+    plan:
+      forbid:
+        - node: Seq Scan
+          table: orders
+    reference: |
+      SELECT order_id, amount
+      FROM orders
+      WHERE created_at >= '2026-06-15' AND created_at < '2026-06-16';
+    hints:
+      - Индекс построен по самой колонке created_at, а условие сравнивает результат функции над ней.
+      - "Перепиши условие на дату как диапазон по исходной колонке."
+      - "1) Убери приведение ::date. 2) Задай полуоткрытый интервал от начала дня до начала следующего."
+      - "WHERE created_at >= '2026-06-15' AND created_at < '___'"
+      - "Индекс хранит значения created_at, а не created_at::date. Диапазон по исходной колонке — sargable-условие: PostgreSQL находит начало диапазона в индексе и читает только нужные строки."
+
+  - id: L11-02
+    type: optimize
+    difficulty: 2
+    customer: Платформа
+    title: Декабрь без EXTRACT
+    ticket: Выборка заказов декабря 2025 года (order_id, created_at) идёт полным проходом. Ускорьте её — без Seq Scan по orders.
+    tables: [orders]
+    expected_columns: [order_id, created_at]
+    start_sql: |
+      SELECT order_id, created_at
+      FROM orders
+      WHERE EXTRACT(YEAR FROM created_at) = 2025
+        AND EXTRACT(MONTH FROM created_at) = 12;
+    plan:
+      forbid:
+        - node: Seq Scan
+          table: orders
+    reference: |
+      SELECT order_id, created_at
+      FROM orders
+      WHERE created_at >= '2025-12-01' AND created_at < '2026-01-01';
+    hints:
+      - EXTRACT — тоже функция над колонкой.
+      - "Месяц — это диапазон дат."
+      - "1) Замени два EXTRACT одним диапазоном. 2) Границы — начало декабря и начало января."
+      - "WHERE created_at >= '2025-12-01' AND created_at < '___'"
+      - "Любая функция над индексированной колонкой прячет её от обычного индекса. Диапазон сохраняет смысл условия и даёт планировщику использовать индекс."
+
+  - id: L11-03
+    type: write_dml
+    difficulty: 2
+    customer: Платформа
+    title: Индекс для сессий
+    ticket: Запрос «все события сессии» (SELECT * FROM events WHERE session_id = 777) выполняется полным проходом. Создайте индекс, после которого он пойдёт по индексу.
+    tables: [events]
+    check: plan
+    plan:
+      probe: SELECT * FROM events WHERE session_id = 777
+      require:
+        - node: Index Scan|Index Only Scan|Bitmap Heap Scan
+          table: events
+    required: [create_index]
+    reference: |
+      CREATE INDEX events_session_idx ON events (session_id);
+    hints:
+      - Условие — равенство по одной колонке.
+      - "CREATE INDEX имя ON таблица (колонка)."
+      - "1) Назови индекс понятно. 2) Укажи таблицу events и колонку session_id."
+      - "CREATE INDEX events_session_idx ON events (___);"
+      - "B-tree индекс по session_id позволяет найти несколько строк сессии, не читая остальные тысячи. Индексы ускоряют чтение, но замедляют запись и занимают место — создают их под реальные запросы."
+
+  - id: L11-04
+    type: write_dml
+    difficulty: 3
+    customer: Платформа
+    title: Поиск по почте
+    ticket: Поддержка ищет клиентов по email без учёта регистра — SELECT * FROM customers WHERE lower(email) = '…'. Обычный индекс по email не помогает. Создайте индекс, с которым этот запрос перестанет читать всю таблицу.
+    tables: [customers]
+    check: plan
+    plan:
+      probe: SELECT * FROM customers WHERE lower(email) = 'anna.ivanova@mail.ru'
+      require:
+        - node: Index Scan|Index Only Scan|Bitmap Heap Scan
+          table: customers
+    required: [create_index]
+    reference: |
+      CREATE INDEX customers_email_lower_idx ON customers (lower(email));
+    hints:
+      - В условии стоит не колонка, а выражение над ней.
+      - "Индекс можно построить по выражению — тому же, что в WHERE."
+      - "1) CREATE INDEX. 2) В скобках — выражение lower(email)."
+      - "CREATE INDEX customers_email_lower_idx ON customers (___(email));"
+      - "Индекс по выражению хранит уже вычисленные lower(email), и условие с тем же выражением использует его. Выражение должно совпадать с условием запроса посимвольно по смыслу."
+
+  - id: L11-05
+    type: optimize
+    difficulty: 3
+    customer: Платформа
+    title: Статистика отзывов
+    ticket: |
+      Отчёт по отзывам считает для каждого товара число отзывов и среднюю оценку двумя подзапросами на строку. Перепишите его так, чтобы оценка стоимости плана стала минимум в 5 раз меньше. Колонки product_id, reviews_cnt, avg_rating (2 знака; у товаров без отзывов 0 и пусто).
+    tables: [products, reviews]
+    expected_columns: [product_id, reviews_cnt, avg_rating]
+    check_column_names: true
+    start_sql: |
+      SELECT p.product_id,
+             (SELECT COUNT(*) FROM reviews AS r WHERE r.product_id = p.product_id) AS reviews_cnt,
+             (SELECT round(AVG(rating), 2) FROM reviews AS r WHERE r.product_id = p.product_id) AS avg_rating
+      FROM products AS p;
+    plan:
+      max_cost_ratio: 0.2
+    reference: |
+      SELECT p.product_id,
+             COUNT(r.review_id) AS reviews_cnt,
+             round(AVG(r.rating), 2) AS avg_rating
+      FROM products AS p
+      LEFT JOIN reviews AS r ON r.product_id = p.product_id
+      GROUP BY p.product_id;
+    hints:
+      - Два подзапроса выполняются для каждого из сотен товаров. Можно посчитать всё за один проход.
+      - "LEFT JOIN reviews и GROUP BY товар."
+      - "1) products LEFT JOIN reviews. 2) COUNT(r.review_id) — чтобы у товаров без отзывов был 0. 3) round(AVG(r.rating), 2). 4) GROUP BY p.product_id."
+      - "SELECT p.product_id, COUNT(r.review_id) AS reviews_cnt, round(AVG(r.rating), 2) AS avg_rating FROM products AS p LEFT JOIN reviews AS r ON … GROUP BY p.product_id;"
+      - "Коррелированный подзапрос в SELECT — это цикл на каждую строку. Одна группировка после JOIN читает отзывы один раз и строит хеш-таблицу. Оценка падает примерно в 200 раз."
+
+  - id: L11-06
+    type: optimize
+    difficulty: 2
+    customer: Платформа
+    title: Неудачное приведение
+    ticket: |
+      Сервис вытаскивает заказы клиента запросом с приведением к тексту — так его сгенерировала ORM. Перепишите его без Seq Scan по orders, сохранив результат — заказы клиента 44 (order_id, created_at, amount).
+    tables: [orders]
+    expected_columns: [order_id, created_at, amount]
+    start_sql: |
+      SELECT order_id, created_at, amount
+      FROM orders
+      WHERE customer_id::text = '44';
+    plan:
+      forbid:
+        - node: Seq Scan
+          table: orders
+    reference: |
+      SELECT order_id, created_at, amount
+      FROM orders
+      WHERE customer_id = 44;
+    hints:
+      - Колонка в условии обёрнута в приведение типа.
+      - "customer_id — число, сравнивай его с числом."
+      - "1) Убери ::text. 2) Сравни с числом 44 без кавычек."
+      - "WHERE customer_id = ___"
+      - "Приведение колонки к другому типу — та же функция над ней, и индекс по customer_id перестаёт подходить. Такие запросы часто рождаются в ORM при несовпадении типов параметров."
+
+  - id: L11-07
+    type: write_query
+    difficulty: 3
+    customer: Data Science
+    title: Признаки для модели оттока
+    ticket: |
+      Соберите обучающую выборку на дату среза 2026-01-01 для клиентов, зарегистрированных до среза. Учитываем неотменённые заказы.
+      customer_id; orders_cnt и total_amount — по заказам до среза (0, если их нет); days_since_last — дней от последнего заказа до среза (пусто, если заказов не было); target — 1, если клиент сделал заказ с 1 января по 31 марта 2026 года, иначе 0.
+    tables: [customers, orders]
+    expected_columns: [customer_id, orders_cnt, total_amount, days_since_last, target]
+    check_column_names: true
+    reference: |
+      SELECT c.customer_id,
+             COUNT(o.order_id) FILTER (WHERE o.created_at < '2026-01-01') AS orders_cnt,
+             COALESCE(SUM(o.amount) FILTER (WHERE o.created_at < '2026-01-01'), 0) AS total_amount,
+             '2026-01-01'::date - MAX(o.created_at) FILTER (WHERE o.created_at < '2026-01-01')::date AS days_since_last,
+             CASE WHEN COUNT(*) FILTER (WHERE o.created_at >= '2026-01-01' AND o.created_at < '2026-04-01') > 0 THEN 1 ELSE 0 END AS target
+      FROM customers AS c
+      LEFT JOIN orders AS o ON o.customer_id = c.customer_id AND o.status <> 'cancelled'
+      WHERE c.registered_at < '2026-01-01'
+      GROUP BY c.customer_id;
+    common_mistakes:
+      - result: values_bigger
+        explain: "Признаки больше, чем должны быть, — похоже на утечку из будущего. Считай orders_cnt, total_amount и последний заказ только по заказам до 2026-01-01."
+    hints:
+      - "Признаки и целевая переменная смотрят на разные периоды: признаки — до среза, target — после. Удобно взять все заказы одним LEFT JOIN и разделить их через FILTER."
+      - "COUNT/SUM/MAX с FILTER (WHERE created_at < '2026-01-01') для признаков и FILTER по первому кварталу 2026 года для target."
+      - "1) customers LEFT JOIN orders (не отменённые) — условие на статус в ON. 2) Фильтр регистрации до среза. 3) Признаки через FILTER. 4) days_since_last = дата среза − дата последнего заказа. 5) target через CASE."
+      - "'2026-01-01'::date - MAX(o.created_at) FILTER (WHERE o.created_at < '2026-01-01')::date AS days_since_last"
+      - "Разность двух date — целое число дней. Если клиент не заказывал до среза, MAX с фильтром даёт NULL, и days_since_last тоже пусто — честное «нет данных». Признак, посчитанный по всем заказам, видел бы будущее, и модель училась бы на утечке."
+
+  - id: L11-08
+    type: fix_bug
+    difficulty: 2
+    customer: Data Science
+    title: Модель слишком хороша
+    ticket: |
+      Модель оттока показала почти идеальное качество на истории. Причина — утечка: признак orders_cnt считает все заказы клиента, включая будущие. Почините: orders_cnt — неотменённые заказы до 2026-01-01, target — был ли неотменённый заказ в первом квартале 2026 года. Клиенты, зарегистрированные до среза.
+    tables: [customers, orders]
+    expected_columns: [customer_id, orders_cnt, target]
+    broken_query: |
+      SELECT c.customer_id,
+             COUNT(o.order_id) AS orders_cnt,
+             CASE WHEN COUNT(*) FILTER (WHERE o.created_at >= '2026-01-01' AND o.created_at < '2026-04-01') > 0 THEN 1 ELSE 0 END AS target
+      FROM customers AS c
+      LEFT JOIN orders AS o ON o.customer_id = c.customer_id AND o.status <> 'cancelled'
+      WHERE c.registered_at < '2026-01-01'
+      GROUP BY c.customer_id;
+    reference: |
+      SELECT c.customer_id,
+             COUNT(o.order_id) FILTER (WHERE o.created_at < '2026-01-01') AS orders_cnt,
+             CASE WHEN COUNT(*) FILTER (WHERE o.created_at >= '2026-01-01' AND o.created_at < '2026-04-01') > 0 THEN 1 ELSE 0 END AS target
+      FROM customers AS c
+      LEFT JOIN orders AS o ON o.customer_id = c.customer_id AND o.status <> 'cancelled'
+      WHERE c.registered_at < '2026-01-01'
+      GROUP BY c.customer_id;
+    hints:
+      - Признак должен видеть только прошлое относительно даты среза.
+      - "orders_cnt считает и заказы первого квартала 2026 года — те же, по которым строится target."
+      - "1) Ограничь подсчёт orders_cnt заказами до среза. 2) target не трогай."
+      - "COUNT(o.order_id) FILTER (WHERE o.created_at < '___') AS orders_cnt"
+      - "Если признак включает период целевой переменной, он подсказывает модели ответ. Такие ошибки находят по подозрительно высокому качеству и по важности признаков."
+
+  - id: L11-09
+    type: write_query
+    difficulty: 2
+    customer: Data Science
+    title: Train и test
+    ticket: |
+      Разбейте клиентов на обучающую и тестовую выборки воспроизводимо: split = 'train', если abs(hashtext(customer_id::text)) % 10 < 8, иначе 'test'. Покажите split и customers — число клиентов в каждой части.
+    tables: [customers]
+    expected_columns: [split, customers]
+    check_column_names: true
+    reference: |
+      SELECT CASE WHEN abs(hashtext(customer_id::text)) % 10 < 8 THEN 'train' ELSE 'test' END AS split,
+             COUNT(*) AS customers
+      FROM customers
+      GROUP BY split;
+    hints:
+      - Принадлежность к выборке вычисляется из самого клиента, а не случайно.
+      - "hashtext превращает текст в целое число; остаток от деления на 10 — номер «корзины» от 0 до 9."
+      - "1) CASE с условием из тикета. 2) GROUP BY split. 3) COUNT(*)."
+      - "CASE WHEN abs(hashtext(customer_id::text)) % 10 < ___ THEN 'train' ELSE 'test' END AS split"
+      - "Хеш-разбиение воспроизводимо: при пересчёте признаков клиент не перепрыгнет из train в test, как было бы с random(). Получается примерно 80/20."
+
+  - id: L11-10
+    type: write_query
+    difficulty: 2
+    customer: Рекомендации
+    title: Похожие товары
+    ticket: Блок «Похожие товары» для товара 42 — пять ближайших к нему товаров по косинусному расстоянию векторов. product_id, name и distance (4 знака), от ближайшего. Сам товар 42 не показывайте.
+    tables: [product_embeddings, products]
+    expected_columns: [product_id, name, distance]
+    check_column_names: true
+    ordered: true
+    order_keys: [distance]
+    reference: |
+      SELECT p.product_id, p.name,
+             round((e.embedding <=> (SELECT embedding FROM product_embeddings WHERE product_id = 42))::numeric, 4) AS distance
+      FROM product_embeddings AS e
+      JOIN products AS p ON p.product_id = e.product_id
+      WHERE e.product_id <> 42
+      ORDER BY e.embedding <=> (SELECT embedding FROM product_embeddings WHERE product_id = 42)
+      LIMIT 5;
+    hints:
+      - Нужно расстояние от каждого вектора до вектора товара 42 и пять наименьших.
+      - "Оператор <=> — косинусное расстояние pgvector. Вектор товара 42 достаётся подзапросом."
+      - "1) Подзапрос с вектором товара 42. 2) Расстояние для остальных. 3) ORDER BY расстоянию, LIMIT 5. 4) JOIN products ради названия."
+      - "ORDER BY e.embedding <=> (SELECT embedding FROM product_embeddings WHERE product_id = 42) LIMIT ___"
+      - "Сортировка по выражению с <=> — стандартный kNN-запрос pgvector. На больших объёмах его ускоряет индекс HNSW (USING hnsw (embedding vector_cosine_ops)), который даёт приближённый, но очень быстрый ответ."
+
+  - id: L11-11
+    type: write_query
+    difficulty: 3
+    customer: Рекомендации
+    title: Похожие из другой категории
+    ticket: Для кросс-продаж нужны три ближайших по косинусному расстоянию к товару 42 товара из других категорий — product_id, category_id, distance (4 знака), от ближайшего.
+    tables: [product_embeddings, products]
+    expected_columns: [product_id, category_id, distance]
+    check_column_names: true
+    ordered: true
+    order_keys: [distance]
+    reference: |
+      WITH target AS (
+        SELECT e.embedding, p.category_id
+        FROM product_embeddings AS e JOIN products AS p ON p.product_id = e.product_id
+        WHERE e.product_id = 42
+      )
+      SELECT p.product_id, p.category_id, round((e.embedding <=> t.embedding)::numeric, 4) AS distance
+      FROM product_embeddings AS e
+      JOIN products AS p ON p.product_id = e.product_id
+      CROSS JOIN target AS t
+      WHERE p.category_id <> t.category_id
+      ORDER BY e.embedding <=> t.embedding
+      LIMIT 3;
+    hints:
+      - Нужны и вектор, и категория товара 42 — удобно достать их один раз в CTE.
+      - "CTE target с embedding и category_id товара 42, затем CROSS JOIN с ним."
+      - "1) target. 2) Фильтр p.category_id <> t.category_id. 3) Сортировка по расстоянию, LIMIT 3."
+      - "WHERE p.category_id <> t.___ ORDER BY e.embedding <=> t.embedding LIMIT 3"
+      - "Векторы построены так, что товары одной ветки каталога лежат близко. Исключив свою категорию, получаем ближайших соседей из смежных категорий той же ветки — хороший кандидат для кросс-продаж."
+
+  - id: L11-12
+    type: predict
+    difficulty: 1
+    customer: Обучение
+    title: Сколько индексов
+    ticket: Что вернёт запрос? Подсказка — первичный ключ тоже индекс.
+    tables: [orders]
+    query: |
+      SELECT COUNT(*)
+      FROM pg_indexes
+      WHERE schemaname = current_schema() AND tablename = 'orders';
+    ask: value
+    distractor_values: ['1', '2', '4']
+    hints:
+      - pg_indexes — системное представление со списком индексов.
+      - "У orders есть первичный ключ и индексы, упомянутые в теории уровня."
+      - "1) Первичный ключ order_id. 2) Индекс по created_at. 3) Индекс по customer_id."
+      - "1 + 1 + 1 = ___"
+      - "PRIMARY KEY автоматически создаёт уникальный индекс. Ещё два индекса ускоряют поиск по дате и по клиенту — на них опираются задачи этого уровня."
+
+  - id: L11-13
+    type: choose
+    difficulty: 3
+    customer: Обучение
+    title: Признак без утечки
+    ticket: Нужно число неотменённых заказов каждого клиента до даты среза 2026-01-01 для всех клиентов, зарегистрированных до среза (0, если заказов не было). Какие запросы верны? Отметьте все.
+    tables: [customers, orders]
+    expected_columns: [customer_id, orders_cnt]
+    reference: |
+      SELECT c.customer_id, COUNT(o.order_id) AS orders_cnt FROM customers c LEFT JOIN orders o ON o.customer_id = c.customer_id AND o.status <> 'cancelled' AND o.created_at < '2026-01-01' WHERE c.registered_at < '2026-01-01' GROUP BY c.customer_id;
+    options:
+      - SELECT c.customer_id, COUNT(o.order_id) AS orders_cnt FROM customers c LEFT JOIN orders o ON o.customer_id = c.customer_id AND o.status <> 'cancelled' AND o.created_at < '2026-01-01' WHERE c.registered_at < '2026-01-01' GROUP BY c.customer_id;
+      - SELECT c.customer_id, COUNT(o.order_id) FILTER (WHERE o.created_at < '2026-01-01') AS orders_cnt FROM customers c LEFT JOIN orders o ON o.customer_id = c.customer_id AND o.status <> 'cancelled' WHERE c.registered_at < '2026-01-01' GROUP BY c.customer_id;
+      - SELECT c.customer_id, COUNT(o.order_id) AS orders_cnt FROM customers c LEFT JOIN orders o ON o.customer_id = c.customer_id AND o.status <> 'cancelled' WHERE c.registered_at < '2026-01-01' GROUP BY c.customer_id;
+      - SELECT c.customer_id, COUNT(o.order_id) AS orders_cnt FROM customers c LEFT JOIN orders o ON o.customer_id = c.customer_id AND o.status <> 'cancelled' WHERE c.registered_at < '2026-01-01' AND o.created_at < '2026-01-01' GROUP BY c.customer_id;
+    expect_correct: [0, 1]
+    hints:
+      - Проверь два случая — клиента с заказами после среза и клиента без заказов до среза.
+      - "Без условия на дату признак видит будущее."
+      - "Условие на правую таблицу в WHERE выкидывает клиентов без заказов до среза."
+      - Условие в ON и FILTER оставляют всех клиентов и отсекают будущее.
+      - "Верны вариант с датой в ON и вариант с FILTER. Без даты — утечка, а дата в WHERE теряет клиентов с нулём заказов, и они пропадут из обучающей выборки."
+
+  - id: L11-14
+    type: optimize
+    boss: true
+    difficulty: 3
+    customer: Data Science
+    title: "Инцидент: витрина признаков"
+    ticket: |
+      Ночной расчёт витрины признаков перестал укладываться в окно. Перепишите отчёт так, чтобы оценка стоимости плана стала минимум в 5 раз меньше, а результат не изменился.
+      Для клиентов, зарегистрированных до 2026-01-01: customer_id; orders_cnt, total_amount и last_order_at — по неотменённым заказам до 2026-01-01; reviews_cnt — отзывы до 2026-01-01; target — 1, если был неотменённый заказ в первом квартале 2026 года, иначе 0.
+    tables: [customers, orders, reviews]
+    expected_columns: [customer_id, orders_cnt, total_amount, last_order_at, reviews_cnt, target]
+    check_column_names: true
+    start_sql: |
+      SELECT c.customer_id,
+             (SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.customer_id AND o.status <> 'cancelled' AND o.created_at < '2026-01-01') AS orders_cnt,
+             (SELECT COALESCE(SUM(o.amount), 0) FROM orders o WHERE o.customer_id = c.customer_id AND o.status <> 'cancelled' AND o.created_at < '2026-01-01') AS total_amount,
+             (SELECT MAX(o.created_at) FROM orders o WHERE o.customer_id = c.customer_id AND o.status <> 'cancelled' AND o.created_at < '2026-01-01') AS last_order_at,
+             (SELECT COUNT(*) FROM reviews r WHERE r.customer_id = c.customer_id AND r.created_at < '2026-01-01') AS reviews_cnt,
+             CASE WHEN EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.customer_id AND o.status <> 'cancelled' AND o.created_at >= '2026-01-01' AND o.created_at < '2026-04-01') THEN 1 ELSE 0 END AS target
+      FROM customers c
+      WHERE c.registered_at < '2026-01-01';
+    plan:
+      max_cost_ratio: 0.2
+    reference: |
+      WITH o AS (
+        SELECT customer_id,
+               COUNT(*) FILTER (WHERE created_at < '2026-01-01') AS orders_cnt,
+               COALESCE(SUM(amount) FILTER (WHERE created_at < '2026-01-01'), 0) AS total_amount,
+               MAX(created_at) FILTER (WHERE created_at < '2026-01-01') AS last_order_at,
+               MAX(CASE WHEN created_at >= '2026-01-01' AND created_at < '2026-04-01' THEN 1 ELSE 0 END) AS target
+        FROM orders
+        WHERE status <> 'cancelled'
+        GROUP BY customer_id
+      ),
+      r AS (
+        SELECT customer_id, COUNT(*) AS reviews_cnt
+        FROM reviews
+        WHERE created_at < '2026-01-01'
+        GROUP BY customer_id
+      )
+      SELECT c.customer_id,
+             COALESCE(o.orders_cnt, 0) AS orders_cnt,
+             COALESCE(o.total_amount, 0) AS total_amount,
+             o.last_order_at,
+             COALESCE(r.reviews_cnt, 0) AS reviews_cnt,
+             COALESCE(o.target, 0) AS target
+      FROM customers AS c
+      LEFT JOIN o ON o.customer_id = c.customer_id
+      LEFT JOIN r ON r.customer_id = c.customer_id
+      WHERE c.registered_at < '2026-01-01';
+    hints:
+      - "Пять подзапросов на каждого из тысяч клиентов — это тысячи маленьких запросов. Все признаки по заказам можно посчитать одной группировкой, а по отзывам — второй."
+      - "CTE o: одна группировка orders по клиенту с FILTER для признаков и для target. CTE r: отзывы до среза. Затем customers LEFT JOIN o LEFT JOIN r."
+      - "1) o: COUNT, SUM, MAX с FILTER (WHERE created_at < срез), target через MAX(CASE …). 2) r: COUNT отзывов. 3) LEFT JOIN обоих к клиентам и COALESCE для тех, у кого нет записей."
+      - "WITH o AS (SELECT customer_id, COUNT(*) FILTER (WHERE created_at < '2026-01-01') AS orders_cnt, …, MAX(CASE WHEN created_at >= '2026-01-01' AND created_at < '2026-04-01' THEN 1 ELSE 0 END) AS target FROM orders WHERE status <> 'cancelled' GROUP BY customer_id), r AS (…) SELECT … FROM customers c LEFT JOIN o … LEFT JOIN r … WHERE c.registered_at < '2026-01-01';"
+      - "Агрегация до соединения читает каждую таблицу один раз и не размножает строки, а COALESCE возвращает нули тем, у кого нет заказов или отзывов. Так строят витрины признаков: один проход на источник, затем JOIN по ключу сущности."

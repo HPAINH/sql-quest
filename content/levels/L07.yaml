@@ -1,0 +1,416 @@
+level: 7
+grade: Middle
+title: Оконные функции I
+tag: OVER
+book_chapter: 9
+summary: Считаем по группе, не схлопывая строки, — средние рядом со значениями, нумерация, рейтинги и топ-N в каждой группе.
+theory: |
+  **Оконная функция** считает значение по набору строк, связанных с текущей, но, в отличие от GROUP BY, не схлопывает их — каждая строка остаётся в результате.
+
+  ```sql
+  SELECT name, category_id, price,
+         AVG(price) OVER (PARTITION BY category_id) AS avg_in_category
+  FROM products;
+  ```
+
+  - `OVER (…)` превращает функцию в оконную.
+  - `PARTITION BY` делит строки на группы-окна. Без него окно — вся выборка.
+  - `ORDER BY` внутри OVER задаёт порядок строк в окне — он нужен для нумерации и рейтингов.
+
+  **Нумерация и рейтинги:**
+
+  - `ROW_NUMBER()` — 1, 2, 3, 4 даже для равных значений;
+  - `RANK()` — равные делят место, следующее пропускается: 1, 2, 2, 4;
+  - `DENSE_RANK()` — без пропусков: 1, 2, 2, 3.
+
+  **Топ-N в каждой группе** — классика собеседований. Оконную функцию нельзя писать в WHERE: она вычисляется после фильтрации. Поэтому считаем окно в подзапросе или CTE и фильтруем снаружи:
+
+  ```sql
+  WITH ranked AS (
+    SELECT customer_id, order_id, created_at,
+           ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY created_at DESC) AS rn
+    FROM orders
+  )
+  SELECT customer_id, order_id, created_at FROM ranked WHERE rn = 1;
+  ```
+
+  Обычные агрегаты тоже работают как оконные: `SUM(amount) OVER (PARTITION BY customer_id)` даёт сумму клиента в каждой его строке — удобно для долей.
+
+  Порядок вычисления: `FROM → WHERE → GROUP BY → HAVING → окна → SELECT → ORDER BY → LIMIT`.
+tasks:
+  - id: L07-01
+    type: write_query
+    difficulty: 1
+    customer: Каталог
+    title: Цена против категории
+    ticket: Для смартфонов, игровых смартфонов и ноутбуков (category_id 7, 25 и 8) покажите product_id, category_id, price, avg_cat_price — среднюю цену категории товара (округлить до рубля).
+    tables: [products]
+    expected_columns: [product_id, category_id, price, avg_cat_price]
+    check_column_names: true
+    required: [window]
+    reference: |
+      SELECT product_id, category_id, price,
+             round(AVG(price) OVER (PARTITION BY category_id)) AS avg_cat_price
+      FROM products
+      WHERE category_id IN (7, 25, 8);
+    hints:
+      - Нужно среднее по группе, но строки товаров должны остаться.
+      - "AVG(price) OVER (PARTITION BY category_id)."
+      - "1) Фильтр категорий в WHERE. 2) Оконное среднее по категории. 3) Округление."
+      - "round(AVG(price) OVER (PARTITION BY ___)) AS avg_cat_price"
+      - "Окно считается после WHERE, поэтому среднее берётся только по отобранным категориям — здесь это и нужно. GROUP BY схлопнул бы товары в одну строку на категорию."
+
+  - id: L07-02
+    type: write_query
+    difficulty: 2
+    customer: Финансы
+    title: Доля заказа в дне
+    ticket: Для заказов с 1 по 7 июня 2026 года — order_id, day (дата), amount, day_total (сумма всех заказов этого дня) и share_pct (доля заказа в дне, 1 знак).
+    tables: [orders]
+    expected_columns: [order_id, day, amount, day_total, share_pct]
+    check_column_names: true
+    required: [window]
+    reference: |
+      SELECT order_id, created_at::date AS day, amount,
+             SUM(amount) OVER (PARTITION BY created_at::date) AS day_total,
+             round(100 * amount / NULLIF(SUM(amount) OVER (PARTITION BY created_at::date), 0), 1) AS share_pct
+      FROM orders
+      WHERE created_at >= '2026-06-01' AND created_at < '2026-06-08';
+    hints:
+      - Сумма дня нужна в каждой строке заказа этого дня.
+      - "SUM(amount) OVER (PARTITION BY created_at::date)."
+      - "1) Фильтр недели. 2) Оконная сумма по дню. 3) Доля = amount / сумма дня × 100."
+      - "round(100 * amount / SUM(amount) OVER (PARTITION BY created_at::date), 1) AS share_pct"
+      - "Оконная сумма по партиции дня повторяется в каждой строке дня, поэтому долю можно посчитать прямо в SELECT. NULLIF защищает от деления на ноль, если сумма дня окажется нулевой."
+
+  - id: L07-03
+    type: write_query
+    difficulty: 1
+    customer: CRM
+    title: Который по счёту заказ
+    ticket: Пронумеруйте заказы каждого клиента из Уфы по времени — customer_id, order_id, created_at, order_num (1 — первый заказ). Сортировка по customer_id и order_num.
+    tables: [orders, customers]
+    expected_columns: [customer_id, order_id, created_at, order_num]
+    check_column_names: true
+    ordered: true
+    required: [window]
+    reference: |
+      SELECT o.customer_id, o.order_id, o.created_at,
+             ROW_NUMBER() OVER (PARTITION BY o.customer_id ORDER BY o.created_at) AS order_num
+      FROM orders AS o
+      JOIN customers AS c ON c.customer_id = o.customer_id
+      WHERE c.city = 'Уфа'
+      ORDER BY o.customer_id, order_num;
+    hints:
+      - Нумерация заново для каждого клиента — это окно с разбиением.
+      - "ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY created_at)."
+      - "1) JOIN с customers для города. 2) ROW_NUMBER по клиенту в порядке времени. 3) ORDER BY customer_id, order_num."
+      - "ROW_NUMBER() OVER (PARTITION BY o.customer_id ORDER BY o.___) AS order_num"
+      - "PARTITION BY сбрасывает счётчик на каждом новом клиенте, ORDER BY внутри OVER задаёт, кто первый. Внешний ORDER BY только упорядочивает вывод."
+
+  - id: L07-04
+    type: write_query
+    difficulty: 2
+    customer: CRM
+    title: Последний заказ
+    ticket: >-
+      Для каждого клиента из Казани — его самый последний заказ: customer_id, order_id, created_at.
+    tables: [orders, customers]
+    expected_columns: [customer_id, order_id, created_at]
+    required: [window]
+    reference: |
+      WITH ranked AS (
+        SELECT o.customer_id, o.order_id, o.created_at,
+               ROW_NUMBER() OVER (PARTITION BY o.customer_id ORDER BY o.created_at DESC) AS rn
+        FROM orders AS o
+        JOIN customers AS c ON c.customer_id = o.customer_id
+        WHERE c.city = 'Казань'
+      )
+      SELECT customer_id, order_id, created_at FROM ranked WHERE rn = 1;
+    hints:
+      - Пронумеруй заказы каждого клиента от новых к старым и оставь первый.
+      - "Окно в CTE или подзапросе, фильтр rn = 1 снаружи."
+      - "1) CTE с ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY created_at DESC). 2) WHERE rn = 1."
+      - "WITH ranked AS (SELECT …, ROW_NUMBER() OVER (PARTITION BY o.customer_id ORDER BY o.created_at ___) AS rn FROM …) SELECT customer_id, order_id, created_at FROM ranked WHERE rn = 1;"
+      - "Это шаблон «последняя запись в группе». Через MAX(created_at) получилась бы дата, но не order_id — окно сохраняет всю строку."
+
+  - id: L07-05
+    type: write_query
+    difficulty: 3
+    customer: Маркетинг
+    title: Тройка лидеров
+    ticket: |
+      Три самых продаваемых по выручке товара в каждой категории (выручка = quantity × price по доставленным заказам). Если у товаров одинаковая выручка, они делят место — тогда товаров может быть больше трёх.
+      Колонки category_id, product_id, revenue, place.
+    tables: [products, order_items, orders]
+    expected_columns: [category_id, product_id, revenue, place]
+    check_column_names: true
+    required: [window]
+    reference: |
+      WITH rev AS (
+        SELECT p.category_id, p.product_id, SUM(oi.quantity * oi.price) AS revenue
+        FROM order_items AS oi
+        JOIN orders AS o ON o.order_id = oi.order_id AND o.status = 'delivered'
+        JOIN products AS p ON p.product_id = oi.product_id
+        GROUP BY p.category_id, p.product_id
+      ),
+      ranked AS (
+        SELECT *, RANK() OVER (PARTITION BY category_id ORDER BY revenue DESC) AS place FROM rev
+      )
+      SELECT category_id, product_id, revenue, place FROM ranked WHERE place <= 3;
+    hints:
+      - Сначала выручка по товарам, затем рейтинг внутри категории, затем фильтр.
+      - "Делить место при равенстве умеет RANK (или DENSE_RANK)."
+      - "1) CTE rev: GROUP BY товар. 2) RANK() OVER (PARTITION BY category_id ORDER BY revenue DESC). 3) place <= 3."
+      - "RANK() OVER (PARTITION BY category_id ORDER BY revenue ___) AS place … WHERE place <= 3"
+      - "Агрегат и окно можно совместить в одном запросе, но в два шага понятнее. RANK честно обрабатывает ничьи, ROW_NUMBER выбрал бы одного из равных случайно."
+
+  - id: L07-06
+    type: write_query
+    difficulty: 2
+    customer: HR
+    title: Ранг по зарплате
+    ticket: Ранжируйте сотрудников по зарплате внутри отдела — department, full_name, salary, salary_rank (1 — самая высокая, равные зарплаты делят место, места идут без пропусков).
+    tables: [employees]
+    expected_columns: [department, full_name, salary, salary_rank]
+    check_column_names: true
+    required: [dense_rank]
+    reference: |
+      SELECT department, full_name, salary,
+             DENSE_RANK() OVER (PARTITION BY department ORDER BY salary DESC) AS salary_rank
+      FROM employees;
+    hints:
+      - «Без пропусков» — подсказка к выбору функции.
+      - "RANK пропускает места после ничьей, DENSE_RANK — нет."
+      - "1) Окно по отделу. 2) Сортировка по зарплате по убыванию. 3) DENSE_RANK."
+      - "___() OVER (PARTITION BY department ORDER BY salary DESC) AS salary_rank"
+      - "При зарплатах 200, 150, 150, 120 DENSE_RANK даёт 1, 2, 2, 3, а RANK — 1, 2, 2, 4."
+
+  - id: L07-07
+    type: write_query
+    difficulty: 3
+    customer: CRM
+    title: Дубли аккаунтов
+    ticket: |
+      Некоторые клиенты зарегистрировались дважды с одним email в разном регистре. Для каждого такого email оставляем самый ранний аккаунт.
+      Выведите аккаунты, которые нужно удалить, — customer_id и email.
+    tables: [customers]
+    expected_columns: [customer_id, email]
+    required: [window]
+    reference: |
+      WITH ranked AS (
+        SELECT customer_id, email,
+               ROW_NUMBER() OVER (PARTITION BY lower(email) ORDER BY registered_at, customer_id) AS rn
+        FROM customers
+      )
+      SELECT customer_id, email FROM ranked WHERE rn > 1;
+    hints:
+      - Дубли — это строки с одинаковым lower(email). Нужно пометить первую в каждой группе.
+      - "ROW_NUMBER() OVER (PARTITION BY lower(email) ORDER BY registered_at)."
+      - "1) Пронумеруй аккаунты внутри одного нормализованного email по дате регистрации. 2) Оставь всё, что не первое."
+      - "… WHERE rn ___ 1"
+      - "Это стандартная дедупликация: окно по ключу дубля, сортировка по признаку «главной» записи, удаляются все rn > 1. customer_id в сортировке разрешает ничьи по времени."
+
+  - id: L07-08
+    type: write_query
+    difficulty: 2
+    customer: Качество
+    title: Отклонение от средней
+    ticket: Для товаров, у которых не меньше 12 отзывов, покажите каждый отзыв — review_id, product_id, rating, avg_rating (средняя оценка товара, 2 знака) и diff (rating − средняя, 2 знака).
+    tables: [reviews]
+    expected_columns: [review_id, product_id, rating, avg_rating, diff]
+    check_column_names: true
+    required: [window]
+    reference: |
+      WITH r AS (
+        SELECT review_id, product_id, rating,
+               AVG(rating) OVER (PARTITION BY product_id) AS a,
+               COUNT(*) OVER (PARTITION BY product_id) AS n
+        FROM reviews
+      )
+      SELECT review_id, product_id, rating, round(a, 2) AS avg_rating, round(rating - a, 2) AS diff
+      FROM r
+      WHERE n >= 12;
+    hints:
+      - Число отзывов товара тоже можно посчитать окном — и отфильтровать снаружи.
+      - "AVG(rating) OVER (PARTITION BY product_id) и COUNT(*) OVER (PARTITION BY product_id)."
+      - "1) CTE с двумя оконными значениями. 2) Снаружи: фильтр n >= 12 и округления."
+      - "… FROM r WHERE n >= ___"
+      - "Окна по одной партиции считаются за один проход. Фильтр по количеству нельзя поставить в WHERE того же запроса — окна вычисляются позже."
+
+  - id: L07-09
+    type: fix_bug
+    difficulty: 2
+    customer: CRM
+    title: Первый заказ
+    ticket: Нужен первый заказ каждого клиента из Перми — customer_id, order_id, created_at. Запрос падает. Почините.
+    tables: [orders, customers]
+    expected_columns: [customer_id, order_id, created_at]
+    broken_query: |
+      SELECT o.customer_id, o.order_id, o.created_at
+      FROM orders AS o
+      JOIN customers AS c ON c.customer_id = o.customer_id
+      WHERE c.city = 'Пермь'
+        AND ROW_NUMBER() OVER (PARTITION BY o.customer_id ORDER BY o.created_at) = 1;
+    reference: |
+      SELECT customer_id, order_id, created_at
+      FROM (
+        SELECT o.customer_id, o.order_id, o.created_at,
+               ROW_NUMBER() OVER (PARTITION BY o.customer_id ORDER BY o.created_at) AS rn
+        FROM orders AS o
+        JOIN customers AS c ON c.customer_id = o.customer_id
+        WHERE c.city = 'Пермь'
+      ) AS t
+      WHERE rn = 1;
+    hints:
+      - Прочитай ошибку — оконная функция стоит там, где её не поддерживают.
+      - "Окна вычисляются после WHERE."
+      - "1) Перенеси ROW_NUMBER в SELECT подзапроса. 2) Фильтруй rn = 1 во внешнем запросе."
+      - "SELECT … FROM (SELECT …, ROW_NUMBER() OVER (…) AS rn FROM … WHERE c.city = 'Пермь') AS t WHERE ___ = 1;"
+      - "WHERE выполняется раньше, чем вычисляются окна, поэтому в нём окна недоступны. Фильтровать по окну можно только уровнем выше — в подзапросе или CTE."
+
+  - id: L07-10
+    type: fix_bug
+    difficulty: 1
+    customer: CRM
+    title: Сквозная нумерация
+    ticket: Нужен номер каждого заказа внутри истории клиента (у каждого клиента нумерация с 1) для клиентов из Самары — customer_id, order_id, order_num. Номера идут сквозные по всем клиентам. Почините.
+    tables: [orders, customers]
+    expected_columns: [customer_id, order_id, order_num]
+    broken_query: |
+      SELECT o.customer_id, o.order_id,
+             ROW_NUMBER() OVER (ORDER BY o.created_at) AS order_num
+      FROM orders AS o
+      JOIN customers AS c ON c.customer_id = o.customer_id
+      WHERE c.city = 'Самара';
+    reference: |
+      SELECT o.customer_id, o.order_id,
+             ROW_NUMBER() OVER (PARTITION BY o.customer_id ORDER BY o.created_at) AS order_num
+      FROM orders AS o
+      JOIN customers AS c ON c.customer_id = o.customer_id
+      WHERE c.city = 'Самара';
+    hints:
+      - Окно не знает, что считать нужно отдельно для каждого клиента.
+      - "Не хватает разбиения окна на группы."
+      - "1) Добавь PARTITION BY в OVER. 2) Оставь ORDER BY по времени."
+      - "OVER (___ BY o.customer_id ORDER BY o.created_at)"
+      - "Без PARTITION BY окно — вся выборка, и ROW_NUMBER считает подряд по всем строкам. PARTITION BY сбрасывает нумерацию на каждой группе."
+
+  - id: L07-11
+    type: predict
+    difficulty: 2
+    customer: Обучение
+    title: Сколько рангов
+    ticket: Что вернёт запрос?
+    tables: [employees]
+    query: |
+      SELECT MAX(r)
+      FROM (
+        SELECT DENSE_RANK() OVER (ORDER BY department) AS r
+        FROM employees
+      ) AS t;
+    ask: value
+    distractor_queries:
+      - SELECT MAX(r) FROM (SELECT ROW_NUMBER() OVER (ORDER BY department) AS r FROM employees) AS t;
+      - SELECT MAX(r) FROM (SELECT RANK() OVER (ORDER BY department) AS r FROM employees) AS t;
+    hints:
+      - DENSE_RANK раздаёт места без пропусков — какое место получит последний отдел?
+      - "У всех сотрудников одного отдела одно и то же место."
+      - "1) Сколько разных отделов? 2) Последний отдел получит место, равное их числу."
+      - "Отделы: Аналитика, Логистика, Маркетинг, Поддержка, Продажи, Руководство."
+      - "DENSE_RANK по отделу нумерует сами отделы: максимальное значение равно числу отделов — 6. ROW_NUMBER дал бы число сотрудников, RANK — номер первой строки последнего отдела."
+
+  - id: L07-12
+    type: choose
+    difficulty: 3
+    customer: Обучение
+    title: Минимальная зарплата отдела
+    ticket: Нужны все сотрудники с минимальной зарплатой в своём отделе — если таких несколько, то все. Какие запросы верны? Отметьте все.
+    tables: [employees]
+    expected_columns: [department, full_name, salary]
+    reference: |
+      SELECT department, full_name, salary FROM (SELECT department, full_name, salary, RANK() OVER (PARTITION BY department ORDER BY salary) AS r FROM employees) t WHERE r = 1;
+    options:
+      - SELECT department, full_name, salary FROM (SELECT department, full_name, salary, RANK() OVER (PARTITION BY department ORDER BY salary) AS r FROM employees) t WHERE r = 1;
+      - SELECT department, full_name, salary FROM (SELECT department, full_name, salary, ROW_NUMBER() OVER (PARTITION BY department ORDER BY salary) AS r FROM employees) t WHERE r = 1;
+      - SELECT department, full_name, salary FROM employees e WHERE salary = (SELECT MIN(salary) FROM employees x WHERE x.department = e.department);
+      - SELECT department, full_name, MIN(salary) AS salary FROM employees GROUP BY department, full_name;
+    expect_correct: [0, 2]
+    hints:
+      - Главное здесь — ничьи. Что каждый вариант сделает с двумя сотрудниками с одинаковой минимальной зарплатой?
+      - "ROW_NUMBER всегда даёт одному из них 1, а другому 2."
+      - "GROUP BY department, full_name делает группу из каждого сотрудника."
+      - RANK и сравнение с минимумом сохраняют всех равных.
+      - "Верны RANK = 1 и сравнение с MIN по отделу. ROW_NUMBER оставит лишь одного из равных, а GROUP BY по имени вернёт всех сотрудников."
+
+  - id: L07-13
+    type: target_table
+    difficulty: 2
+    customer: Маркетинг
+    title: Бренды внутри категорий
+    ticket: Получите таблицу как на образце — выручка каждого бренда в категории по доставленным заказам и его доля в выручке категории, внутри категории от большей доли к меньшей.
+    tables: [products, order_items, orders]
+    expected_columns: [category_id, brand, revenue, share_pct]
+    ordered: true
+    order_keys: [category_id, share_pct]
+    required: [window]
+    reference: |
+      WITH b AS (
+        SELECT p.category_id, p.brand, SUM(oi.quantity * oi.price) AS revenue
+        FROM order_items AS oi
+        JOIN orders AS o ON o.order_id = oi.order_id AND o.status = 'delivered'
+        JOIN products AS p ON p.product_id = oi.product_id
+        GROUP BY p.category_id, p.brand
+      )
+      SELECT category_id, brand, revenue,
+             round(100 * revenue / SUM(revenue) OVER (PARTITION BY category_id), 1) AS share_pct
+      FROM b
+      ORDER BY category_id, share_pct DESC;
+    hints:
+      - Сначала выручка по паре категория–бренд, потом доля внутри категории.
+      - "Окно SUM(revenue) OVER (PARTITION BY category_id) поверх агрегата."
+      - "1) CTE с GROUP BY category_id, brand. 2) Доля через оконную сумму. 3) Сортировка."
+      - "round(100 * revenue / SUM(revenue) OVER (PARTITION BY ___), 1) AS share_pct"
+      - "Оконные функции можно применять к результату GROUP BY — в том числе прямо в том же запросе: SUM(SUM(x)) OVER (…)."
+
+  - id: L07-14
+    type: write_query
+    boss: true
+    difficulty: 3
+    customer: Маркетинг
+    title: "Инцидент: витрина хитов"
+    ticket: |
+      Витрина «Хиты категорий» показывает случайные товары. Соберите правильные данные: для каждой категории по продажам 2026 года (доставленные заказы, считаем штуки) — товары, занявшие места с 1 по 3. Равные по штукам товары делят место, места идут без пропусков.
+      Колонки: category (название категории), product (название товара), units, place и share_pct — доля товара в штуках категории за 2026 год (1 знак). Сортировка по category и place.
+    tables: [categories, products, order_items, orders]
+    expected_columns: [category, product, units, place, share_pct]
+    check_column_names: true
+    ordered: true
+    order_keys: [category, place]
+    required: [window]
+    reference: |
+      WITH u AS (
+        SELECT p.category_id, p.product_id, p.name, SUM(oi.quantity) AS units
+        FROM order_items AS oi
+        JOIN orders AS o ON o.order_id = oi.order_id
+        JOIN products AS p ON p.product_id = oi.product_id
+        WHERE o.status = 'delivered' AND o.created_at >= '2026-01-01'
+        GROUP BY p.category_id, p.product_id, p.name
+      ),
+      r AS (
+        SELECT u.*,
+               DENSE_RANK() OVER (PARTITION BY category_id ORDER BY units DESC) AS place,
+               round(100.0 * units / SUM(units) OVER (PARTITION BY category_id), 1) AS share_pct
+        FROM u
+      )
+      SELECT c.name AS category, r.name AS product, r.units, r.place, r.share_pct
+      FROM r
+      JOIN categories AS c ON c.category_id = r.category_id
+      WHERE r.place <= 3
+      ORDER BY category, place;
+    hints:
+      - "Порядок важен: доля считается от всех продаж категории, а не только от тройки лидеров. Значит, доля должна быть посчитана до фильтра по месту."
+      - "Три шага: штуки по товарам → место и доля окнами по категории → фильтр place <= 3 и названия категорий."
+      - "1) CTE u: SUM(quantity) по товару за 2026 год. 2) CTE r: DENSE_RANK и оконная доля. 3) JOIN categories, WHERE place <= 3, ORDER BY."
+      - "r AS (SELECT u.*, DENSE_RANK() OVER (PARTITION BY category_id ORDER BY units DESC) AS place, round(100.0 * units / SUM(units) OVER (PARTITION BY category_id), 1) AS share_pct FROM u)"
+      - "Если сначала отфильтровать тройку, доля посчитается от суммы трёх товаров и будет завышена. Окна считаются по всему набору u, а фильтр применяется уровнем выше. 100.0 делает деление целых штук дробным."

@@ -2,6 +2,41 @@ import { stripSql, features, tokens } from './sqlscan.js';
 
 const RULES = [
   {
+    id: 'update_no_where',
+    when: ({ text, verdict }) => verdict && !verdict.ok && /\b(update|delete)\b/i.test(stripSql(text)) && !/\bwhere\b|\busing\b/i.test(stripSql(text)),
+    say: 'UPDATE или DELETE без WHERE меняет все строки таблицы. Каким условием ограничить изменение?',
+  },
+  {
+    id: 'recursive_missing',
+    when: ({ error, text }) => error?.code === '42P01' && /^\s*with\b/i.test(stripSql(text)) && !/\brecursive\b/i.test(stripSql(text)),
+    say: 'Если CTE ссылается сам на себя, его нужно объявить как WITH RECURSIVE.',
+  },
+  {
+    id: 'median',
+    when: ({ error, text }) => error?.code === '42883' && /\bmedian\s*\(/i.test(stripSql(text)),
+    say: 'Функции median в PostgreSQL нет. Медиана — percentile_cont(0.5) WITHIN GROUP (ORDER BY …).',
+  },
+  {
+    id: 'fk_order',
+    when: ({ error }) => error?.code === '23503',
+    say: 'Удаляй в обратном порядке зависимостей: сначала строки, которые ссылаются, потом те, на которые ссылаются.',
+  },
+  {
+    id: 'last_value_frame',
+    when: ({ verdict, text }) => verdict && !verdict.ok && /\blast_value\s*\(/i.test(text) && !/\bunbounded\s+following\b/i.test(text),
+    say: 'По умолчанию рамка окна заканчивается на текущей строке, поэтому LAST_VALUE возвращает её саму. Нужна рамка до UNBOUNDED FOLLOWING.',
+  },
+  {
+    id: 'row_number_ties',
+    when: ({ verdict, text }) => verdict?.reason === 'rows_less' && /\brow_number\s*\(/i.test(text),
+    say: 'ROW_NUMBER даёт разные номера даже равным значениям и теряет ничьи. Если равные должны делить место — RANK или DENSE_RANK.',
+  },
+  {
+    id: 'partition_missing',
+    when: ({ verdict, text }) => verdict && !verdict.ok && /\bover\s*\(\s*order\s+by/i.test(stripSql(text)) && !/partition\s+by/i.test(text),
+    say: 'В окне нет PARTITION BY — функция считается по всей таблице сразу. Нужно ли разбить строки на группы?',
+  },
+  {
     id: 'eq_null',
     when: ({ text }) => /(=|<>|!=)\s*null\b/i.test(text),
     say: 'Сравнение «= NULL» всегда даёт NULL. Может, нужен IS NULL или IS NOT NULL?',

@@ -38,7 +38,7 @@ export function schemaForCompletion(schema) {
   return s;
 }
 
-export default function Editor({ value, onChange, onRun, onCheck, schema, readOnly = false, minLines = 6, ariaLabel = 'Редактор SQL' }) {
+export default function Editor({ value, onChange, onRun, onCheck, schema, readOnly = false, minLines = 6, ariaLabel = 'Редактор SQL', placeholder = 'SELECT …' }) {
   const host = useRef(null);
   const view = useRef(null);
   const handlers = useRef({ onChange, onRun, onCheck });
@@ -52,7 +52,7 @@ export default function Editor({ value, onChange, onRun, onCheck, schema, readOn
     const state = EditorState.create({
       doc: value || '',
       extensions: [
-        readOnly ? [] : [lineNumbers(), highlightActiveLine(), history(), drawSelection(), closeBrackets(), indentOnInput(), autocompletion({ activateOnTyping: true }), cmPlaceholder('SELECT …'), keys],
+        readOnly ? [] : [lineNumbers(), highlightActiveLine(), history(), drawSelection(), closeBrackets(), indentOnInput(), autocompletion({ activateOnTyping: true }), cmPlaceholder(placeholder), keys],
         bracketMatching(),
         keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...historyKeymap, ...completionKeymap, indentWithTab]),
         sql({ dialect: PostgreSQL, schema: schema ? schemaForCompletion(schema) : undefined, upperCaseKeywords: true }),

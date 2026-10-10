@@ -3,6 +3,7 @@ import content from '../src/content/content.json';
 import { canonValue, canonRows, fingerprint, hide, reveal } from '../src/engine/canon.js';
 import { comparePublic, compareHidden } from '../src/engine/compare.js';
 import { features, guard } from '../src/engine/sqlscan.js';
+import { checkPlan, flattenPlan } from '../src/engine/plan.js';
 import { detect } from '../src/engine/detect.js';
 import { encodeSave, decodeSave, emptyProgress, recordResult, checkPassword, passwords, isLevelUnlocked } from '../src/game/progress.js';
 
@@ -115,5 +116,36 @@ describe('progress', () => {
       expect(t.hints.length + 1).toBe(5);
       expect(t.book_chapter).toBeTruthy();
     }
+  });
+});
+
+describe('write mode and plans', () => {
+  it('allows scripts but not transaction control', () => {
+    expect(guard('INSERT INTO a VALUES (1); UPDATE b SET c = 1 WHERE d = 2;', 'write')).toBe(null);
+    expect(guard('UPDATE a SET b = 1; COMMIT;', 'write')).toMatch(/COMMIT/);
+    expect(guard('BEGIN; DELETE FROM a;', 'write')).toMatch(/BEGIN/);
+    expect(guard('UPDATE shop_h.orders SET status = 1', 'write')).toMatch(/служебная/);
+  });
+  it('detects new constructs', () => {
+    const f = features('INSERT INTO s VALUES (1) ON CONFLICT (a) DO UPDATE SET q = s.q + 1 RETURNING *');
+    expect(f.has('on_conflict') && f.has('returning') && f.has('insert')).toBe(true);
+    expect(features('WITH RECURSIVE t AS (SELECT 1) SELECT * FROM t').has('recursive')).toBe(true);
+    expect(features('CREATE INDEX i ON t (lower(email))').has('create_index')).toBe(true);
+  });
+  it('checks forbidden, required nodes and cost', () => {
+    const root = { 'Node Type': 'Hash Join', 'Total Cost': 70, 'Plan Rows': 500, Plans: [{ 'Node Type': 'Seq Scan', 'Relation Name': 'orders', 'Total Cost': 40, 'Plan Rows': 6000 }] };
+    expect(flattenPlan(root)).toHaveLength(2);
+    expect(checkPlan(root, { forbid: [{ node: 'Seq Scan', table: 'orders' }] }).ok).toBe(false);
+    expect(checkPlan(root, { forbid: [{ node: 'Seq Scan', table: 'events' }] }).ok).toBe(true);
+    expect(checkPlan(root, { require: [{ node: 'Index Scan|Bitmap Heap Scan', table: 'orders' }] }).ok).toBe(false);
+    expect(checkPlan(root, { max_cost: 50 }).ok).toBe(false);
+    expect(checkPlan(root, { max_cost: 100 }).ok).toBe(true);
+  });
+  it('compresses save codes and still reads them', () => {
+    const p = emptyProgress();
+    for (const l of content.levels) for (const t of l.tasks) p.tasks[t.id] = { solved: true, stars: 3, hints: 0 };
+    const code = encodeSave(content, p);
+    expect(code.length).toBeLessThan(60);
+    expect(Object.keys(decodeSave(content, code).tasks)).toHaveLength(content.levels.reduce((a, l) => a + l.tasks.length, 0));
   });
 });

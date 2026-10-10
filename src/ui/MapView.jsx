@@ -101,7 +101,7 @@ export default function MapView({ content, progress, update, go }) {
                 <span className="btn-sub">{next.title}</span>
               </button>
             ) : (
-              <span className="done-note">Все открытые тикеты закрыты. Следующие уровни уже в разработке.</span>
+              <span className="done-note">{content.levels.every((l) => l.tasks.every((t) => progress.tasks[t.id]?.solved)) ? 'Карта пройдена — все тикеты закрыты. Можно добирать звёзды или экспериментировать в песочнице.' : 'Все открытые тикеты закрыты.'}</span>
             )}
           </div>
         </div>

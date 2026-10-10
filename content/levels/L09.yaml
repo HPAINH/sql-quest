@@ -1,0 +1,471 @@
+level: 9
+grade: Senior
+title: Аналитические паттерны
+tag: COHORT
+book_chapter: 11
+summary: Задачи, которые аналитик решает каждую неделю, — медианы, подытоги, воронки, когорты, retention, серии и A/B-тесты.
+theory: |
+  Это уровень приёмов, а не новых слов. Почти каждый собран из CTE, окон и условной агрегации.
+
+  **Медиана и перцентили:**
+
+  ```sql
+  percentile_cont(0.5) WITHIN GROUP (ORDER BY amount)  -- интерполирует между соседними
+  percentile_disc(0.9) WITHIN GROUP (ORDER BY amount)  -- берёт существующее значение
+  ```
+
+  Результат `percentile_cont` имеет тип double precision — для `round(x, 2)` приведите его к numeric.
+
+  **Подытоги:** `GROUP BY ROLLUP (year, quarter)` добавляет строки «итого по году» и «итого всего», где свёрнутые колонки равны NULL. `CUBE` — все комбинации, `GROUPING SETS ((a), (b))` — только перечисленные наборы. Функция `GROUPING(col)` отличает подытог от настоящего NULL.
+
+  **Воронка** — сколько сессий дошло до каждого шага и какая доля перешла с предыдущего:
+
+  ```sql
+  COUNT(DISTINCT session_id) FILTER (WHERE event_type = 'checkout')
+  ```
+
+  **Когорта** — группа клиентов по месяцу первого заказа. **Retention** месяца k — доля когорты, сделавшая заказ через k месяцев. Номер месяца удобно считать как `year * 12 + month`.
+
+  **Острова (gaps & islands)** — непрерывные серии. Трюк: для идущих подряд значений разность «значение − ROW_NUMBER()» постоянна, по ней и группируем.
+
+  **JSONB:** `props->>'device'` достаёт текст по ключу, `props->'device'` — JSON, `props @> '{"device":"mobile"}'` проверяет вхождение.
+
+  **A/B-тест** — сравнение конверсии групп. Считайте только события после момента распределения в группу, иначе в конверсию попадёт то, что было до эксперимента.
+tasks:
+  - id: L09-01
+    type: write_query
+    difficulty: 2
+    customer: Финансы
+    title: Медианный чек
+    ticket: Медиана и 90-й перцентиль суммы доставленного заказа по городам доставки — delivery_city, median_check, p90_check (интерполяция между значениями, 2 знака).
+    tables: [orders]
+    expected_columns: [delivery_city, median_check, p90_check]
+    check_column_names: true
+    required: [within_group]
+    reference: |
+      SELECT delivery_city,
+             round((percentile_cont(0.5) WITHIN GROUP (ORDER BY amount))::numeric, 2) AS median_check,
+             round((percentile_cont(0.9) WITHIN GROUP (ORDER BY amount))::numeric, 2) AS p90_check
+      FROM orders
+      WHERE status = 'delivered'
+      GROUP BY delivery_city;
+    hints:
+      - Медиана — это 50-й перцентиль. Для перцентилей есть агрегаты с WITHIN GROUP.
+      - "percentile_cont(0.5) WITHIN GROUP (ORDER BY amount)."
+      - "1) Только delivered. 2) GROUP BY город. 3) percentile_cont для 0.5 и 0.9. 4) Приведение к numeric и round."
+      - "round((percentile_cont(___) WITHIN GROUP (ORDER BY amount))::numeric, 2)"
+      - "Медиана устойчива к выбросам: пара огромных заказов сдвинет среднее, но почти не тронет медиану. cont интерполирует, disc вернул бы существующую сумму заказа."
+
+  - id: L09-02
+    type: write_query
+    difficulty: 2
+    customer: Финансы
+    title: Подытоги по кварталам
+    ticket: |
+      Выручка доставленных заказов 2025–2026 годов по годам и кварталам с подытогом по каждому году и общим итогом.
+      Колонки year, quarter, revenue. В подытоге года quarter пустой, в общем итоге пусты оба. Сортировка по year и quarter, пустые значения в конце.
+    tables: [orders]
+    expected_columns: [year, quarter, revenue]
+    check_column_names: true
+    ordered: true
+    required: [grouping_sets]
+    reference: |
+      SELECT EXTRACT(YEAR FROM created_at) AS year,
+             EXTRACT(QUARTER FROM created_at) AS quarter,
+             SUM(amount) AS revenue
+      FROM orders
+      WHERE status = 'delivered' AND created_at >= '2025-01-01'
+      GROUP BY ROLLUP (year, quarter)
+      ORDER BY year NULLS LAST, quarter NULLS LAST;
+    hints:
+      - Подытоги по иерархии год → квартал строит одно расширение GROUP BY.
+      - "GROUP BY ROLLUP (year, quarter)."
+      - "1) Фильтр delivered и даты. 2) ROLLUP по году и кварталу. 3) ORDER BY … NULLS LAST."
+      - "GROUP BY ___ (year, quarter) ORDER BY year NULLS LAST, quarter NULLS LAST"
+      - "ROLLUP (a, b) равносилен GROUPING SETS ((a, b), (a), ()): детальные строки, подытоги по a и общий итог. NULL в колонке означает «по всем значениям»."
+
+  - id: L09-03
+    type: write_query
+    difficulty: 2
+    customer: Финансы
+    title: Два среза в одной таблице
+    ticket: |
+      Платежи 2026 года в одной таблице двумя срезами — по способу оплаты и по месяцу (без их сочетаний).
+      Колонки method, month (date), payments_cnt, total. В строках среза по способу month пустой, в строках по месяцу пустой method.
+    tables: [payments]
+    expected_columns: [method, month, payments_cnt, total]
+    check_column_names: true
+    required: [grouping_sets]
+    reference: |
+      SELECT method, date_trunc('month', paid_at)::date AS month, COUNT(*) AS payments_cnt, SUM(amount) AS total
+      FROM payments
+      WHERE paid_at >= '2026-01-01'
+      GROUP BY GROUPING SETS ((method), (month));
+    hints:
+      - Нужны два отдельных набора группировки в одном запросе.
+      - "GROUP BY GROUPING SETS ((method), (month))."
+      - "1) Фильтр 2026 года. 2) month через date_trunc. 3) GROUPING SETS с двумя наборами."
+      - "GROUP BY GROUPING SETS ((___), (month))"
+      - "GROUPING SETS заменяет UNION ALL нескольких группировок: таблица читается один раз, а в каждом наборе отсутствующие колонки равны NULL."
+
+  - id: L09-04
+    type: write_query
+    difficulty: 3
+    customer: Продукт
+    title: Воронка покупки
+    ticket: |
+      Воронка сайта по сессиям: просмотр → корзина → оформление → покупка. Для каждого шага — step_no (1–4), event_type, sessions (сколько сессий дошло до шага) и conversion_pct — доля от сессий предыдущего шага (1 знак, у первого шага пусто).
+      Сортировка по step_no.
+    tables: [events]
+    expected_columns: [step_no, event_type, sessions, conversion_pct]
+    check_column_names: true
+    ordered: true
+    required: [lag]
+    reference: |
+      WITH s AS (
+        SELECT CASE event_type WHEN 'view' THEN 1 WHEN 'add_to_cart' THEN 2 WHEN 'checkout' THEN 3 WHEN 'purchase' THEN 4 END AS step_no,
+               event_type,
+               COUNT(DISTINCT session_id) AS sessions
+        FROM events
+        GROUP BY event_type
+      )
+      SELECT step_no, event_type, sessions,
+             round(100.0 * sessions / LAG(sessions) OVER (ORDER BY step_no), 1) AS conversion_pct
+      FROM s
+      ORDER BY step_no;
+    hints:
+      - Посчитай сессии на каждом шаге, упорядочь шаги и сравни каждый с предыдущим.
+      - "Номер шага задаёт CASE по event_type; предыдущий шаг — LAG."
+      - "1) CTE: step_no через CASE, COUNT(DISTINCT session_id) по event_type. 2) LAG(sessions) OVER (ORDER BY step_no). 3) Процент."
+      - "round(100.0 * sessions / LAG(sessions) OVER (ORDER BY step_no), 1) AS conversion_pct"
+      - "Считать надо сессии, а не события: в реальных данных один шаг может повториться в сессии несколько раз. Конверсия шага — от предыдущего шага, а не от первого: так видно, где воронка теряет больше всего."
+
+  - id: L09-05
+    type: write_query
+    difficulty: 2
+    customer: Продукт
+    title: Конверсия по устройствам
+    ticket: Конверсия сессий в покупку по устройствам — device (ключ device из props), sessions, purchases (сессии с покупкой), conversion_pct (1 знак).
+    tables: [events]
+    expected_columns: [device, sessions, purchases, conversion_pct]
+    check_column_names: true
+    required: [filter]
+    reference: |
+      SELECT props->>'device' AS device,
+             COUNT(DISTINCT session_id) AS sessions,
+             COUNT(DISTINCT session_id) FILTER (WHERE event_type = 'purchase') AS purchases,
+             round(100.0 * COUNT(DISTINCT session_id) FILTER (WHERE event_type = 'purchase') / COUNT(DISTINCT session_id), 1) AS conversion_pct
+      FROM events
+      GROUP BY device;
+    hints:
+      - Устройство лежит внутри JSONB, а сессии с покупкой — подмножество всех сессий.
+      - "props->>'device' достаёт текст; FILTER ограничивает второй счётчик покупками."
+      - "1) GROUP BY props->>'device'. 2) COUNT(DISTINCT session_id). 3) То же с FILTER (WHERE event_type = 'purchase'). 4) Доля."
+      - "COUNT(DISTINCT session_id) FILTER (WHERE event_type = '___') AS purchases"
+      - "->> возвращает text, его можно группировать и сравнивать. Оператор -> вернул бы jsonb со значением в кавычках."
+
+  - id: L09-06
+    type: write_query
+    difficulty: 3
+    customer: CRM
+    title: Серии без пропусков
+    ticket: |
+      Для клиентов из Казани найдите самую длинную серию месяцев подряд, в каждом из которых был хотя бы один заказ.
+      Колонки customer_id и max_streak (число месяцев).
+    tables: [orders, customers]
+    expected_columns: [customer_id, max_streak]
+    check_column_names: true
+    required: [window]
+    reference: |
+      WITH m AS (
+        SELECT DISTINCT o.customer_id,
+               EXTRACT(YEAR FROM o.created_at) * 12 + EXTRACT(MONTH FROM o.created_at) AS mi
+        FROM orders AS o
+        JOIN customers AS c ON c.customer_id = o.customer_id
+        WHERE c.city = 'Казань'
+      ),
+      g AS (
+        SELECT customer_id, mi - ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY mi) AS grp
+        FROM m
+      ),
+      streaks AS (
+        SELECT customer_id, grp, COUNT(*) AS len FROM g GROUP BY customer_id, grp
+      )
+      SELECT customer_id, MAX(len) AS max_streak FROM streaks GROUP BY customer_id;
+    hints:
+      - "Это задача «острова»: месяцы подряд образуют остров, и нужна длина самого большого."
+      - "Номер месяца = год × 12 + месяц. Для идущих подряд номеров разность «номер − ROW_NUMBER()» одинакова."
+      - "1) Уникальные месяцы клиента. 2) grp = mi − ROW_NUMBER() по клиенту. 3) Размер каждого острова. 4) Максимум по клиенту."
+      - "mi - ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY ___) AS grp"
+      - "Если месяцы 5, 6, 7, 10, то ROW_NUMBER — 1, 2, 3, 4, а разности 4, 4, 4, 6: первые три месяца — один остров длиной 3. DISTINCT важен: несколько заказов в месяце сломали бы нумерацию."
+
+  - id: L09-07
+    type: write_query
+    difficulty: 2
+    customer: Маркетинг
+    title: Размер когорт
+    ticket: Сколько клиентов сделали свой первый заказ в каждом месяце 2025 года? cohort (месяц первого заказа, date) и customers, по месяцам.
+    tables: [orders]
+    expected_columns: [cohort, customers]
+    check_column_names: true
+    ordered: true
+    reference: |
+      WITH firsts AS (
+        SELECT customer_id, date_trunc('month', MIN(created_at))::date AS cohort
+        FROM orders
+        GROUP BY customer_id
+      )
+      SELECT cohort, COUNT(*) AS customers
+      FROM firsts
+      WHERE cohort >= '2025-01-01' AND cohort < '2026-01-01'
+      GROUP BY cohort
+      ORDER BY cohort;
+    hints:
+      - Когорта клиента — месяц его самого первого заказа за всю историю.
+      - "MIN(created_at) по клиенту, затем date_trunc до месяца."
+      - "1) CTE с месяцем первого заказа. 2) Фильтр 2025 года. 3) Количество по месяцам."
+      - "date_trunc('month', MIN(created_at))::date AS cohort … WHERE cohort >= '2025-01-01' AND cohort < ___"
+      - "Фильтровать по 2025 году нужно после поиска первого заказа, иначе клиенты 2024 года попадут в когорты 2025-го."
+
+  - id: L09-08
+    type: write_query
+    difficulty: 3
+    customer: Продукт
+    title: Новое оформление заказа
+    ticket: |
+      Итоги A/B-теста new_checkout: для групп A и B — variant, users (участники), buyers (участники, сделавшие хотя бы один заказ после момента распределения) и conversion_pct (1 знак).
+    tables: [ab_assignments, orders]
+    expected_columns: [variant, users, buyers, conversion_pct]
+    check_column_names: true
+    required: [exists]
+    reference: |
+      SELECT a.variant,
+             COUNT(*) AS users,
+             COUNT(*) FILTER (WHERE EXISTS (
+               SELECT 1 FROM orders AS o WHERE o.customer_id = a.customer_id AND o.created_at > a.assigned_at
+             )) AS buyers,
+             round(100.0 * COUNT(*) FILTER (WHERE EXISTS (
+               SELECT 1 FROM orders AS o WHERE o.customer_id = a.customer_id AND o.created_at > a.assigned_at
+             )) / COUNT(*), 1) AS conversion_pct
+      FROM ab_assignments AS a
+      WHERE a.experiment = 'new_checkout'
+      GROUP BY a.variant;
+    common_mistakes:
+      - result: values_bigger
+        explain: "Покупателей больше, чем должно быть. Заказы до распределения в группу не связаны с экспериментом — учитывай только created_at > assigned_at."
+    hints:
+      - Покупатель группы — участник, у которого есть заказ после распределения.
+      - "EXISTS с условием o.created_at > a.assigned_at внутри FILTER."
+      - "1) ab_assignments эксперимента new_checkout. 2) GROUP BY variant. 3) COUNT(*) и COUNT(*) FILTER (WHERE EXISTS …). 4) Доля."
+      - "COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = a.customer_id AND o.created_at > a.___)) AS buyers"
+      - "EXISTS не размножает участников при нескольких заказах — в отличие от JOIN. Без условия на время конверсия учла бы покупки до эксперимента, и разница групп размылась бы."
+
+  - id: L09-09
+    type: write_query
+    difficulty: 2
+    customer: Каталог
+    title: Верхние десять процентов
+    ticket: Товары, входящие в верхние 10% по выручке доставленных заказов среди проданных товаров (CUME_DIST по убыванию выручки не больше 0.1), — product_id и revenue.
+    tables: [order_items, orders]
+    expected_columns: [product_id, revenue]
+    required: [window]
+    reference: |
+      WITH r AS (
+        SELECT oi.product_id, SUM(oi.quantity * oi.price) AS revenue
+        FROM order_items AS oi
+        JOIN orders AS o ON o.order_id = oi.order_id AND o.status = 'delivered'
+        GROUP BY oi.product_id
+      ),
+      d AS (
+        SELECT product_id, revenue, CUME_DIST() OVER (ORDER BY revenue DESC) AS cd FROM r
+      )
+      SELECT product_id, revenue FROM d WHERE cd <= 0.1;
+    hints:
+      - Нужна относительная позиция товара в отсортированном списке.
+      - "CUME_DIST() OVER (ORDER BY revenue DESC) — доля строк, стоящих не дальше текущей."
+      - "1) Выручка по товарам. 2) CUME_DIST по убыванию выручки. 3) Фильтр cd <= 0.1 снаружи."
+      - "CUME_DIST() OVER (ORDER BY revenue ___) AS cd … WHERE cd <= 0.1"
+      - "CUME_DIST равен доле строк с таким же или лучшим значением, поэтому равные товары не разделятся на границе. PERCENT_RANK считает похожим образом, но начинает с 0."
+
+  - id: L09-10
+    type: fix_bug
+    difficulty: 1
+    customer: Финансы
+    title: Функция median
+    ticket: Нужна медиана суммы доставленных заказов по способу оплаты — method и median_amount (2 знака). Запрос падает. Почините.
+    tables: [payments, orders]
+    expected_columns: [method, median_amount]
+    broken_query: |
+      SELECT p.method, round(median(o.amount), 2) AS median_amount
+      FROM payments AS p
+      JOIN orders AS o ON o.order_id = p.order_id
+      WHERE o.status = 'delivered'
+      GROUP BY p.method;
+    reference: |
+      SELECT p.method,
+             round((percentile_cont(0.5) WITHIN GROUP (ORDER BY o.amount))::numeric, 2) AS median_amount
+      FROM payments AS p
+      JOIN orders AS o ON o.order_id = p.order_id
+      WHERE o.status = 'delivered'
+      GROUP BY p.method;
+    hints:
+      - В PostgreSQL нет функции с таким именем.
+      - "Медиана — это перцентиль 0.5."
+      - "1) Замени median на percentile_cont. 2) Добавь WITHIN GROUP. 3) Приведи к numeric для round."
+      - "round((percentile_cont(0.5) WITHIN GROUP (ORDER BY ___))::numeric, 2)"
+      - "median есть в некоторых других СУБД, а в PostgreSQL медиану считают как percentile_cont(0.5) WITHIN GROUP (ORDER BY …)."
+
+  - id: L09-11
+    type: fix_bug
+    difficulty: 2
+    customer: Продукт
+    title: Не та конверсия
+    ticket: Конверсия каждого шага воронки должна считаться от предыдущего шага — step_no, sessions, conversion_pct (1 знак, у первого шага пусто). Сейчас она считается от первого шага. Почините.
+    tables: [events]
+    expected_columns: [step_no, sessions, conversion_pct]
+    ordered: true
+    broken_query: |
+      WITH s AS (
+        SELECT CASE event_type WHEN 'view' THEN 1 WHEN 'add_to_cart' THEN 2 WHEN 'checkout' THEN 3 ELSE 4 END AS step_no,
+               COUNT(DISTINCT session_id) AS sessions
+        FROM events
+        GROUP BY event_type
+      )
+      SELECT step_no, sessions,
+             round(100.0 * sessions / NULLIF(FIRST_VALUE(sessions) OVER (ORDER BY step_no), sessions), 1) AS conversion_pct
+      FROM s
+      ORDER BY step_no;
+    reference: |
+      WITH s AS (
+        SELECT CASE event_type WHEN 'view' THEN 1 WHEN 'add_to_cart' THEN 2 WHEN 'checkout' THEN 3 ELSE 4 END AS step_no,
+               COUNT(DISTINCT session_id) AS sessions
+        FROM events
+        GROUP BY event_type
+      )
+      SELECT step_no, sessions,
+             round(100.0 * sessions / LAG(sessions) OVER (ORDER BY step_no), 1) AS conversion_pct
+      FROM s
+      ORDER BY step_no;
+    hints:
+      - Посмотри, с какой строкой сравнивается каждый шаг.
+      - "FIRST_VALUE всегда берёт первую строку окна."
+      - "1) Замени FIRST_VALUE на функцию предыдущей строки. 2) Уберётся и NULLIF-трюк для первого шага."
+      - "round(100.0 * sessions / ___(sessions) OVER (ORDER BY step_no), 1)"
+      - "LAG у первого шага возвращает NULL, и процент получается пустым — как и требуется. FIRST_VALUE давал конверсию от первого шага, то есть сквозную."
+
+  - id: L09-12
+    type: predict
+    difficulty: 1
+    customer: Обучение
+    title: Строки ROLLUP
+    ticket: Сколько строк вернёт запрос?
+    tables: [orders]
+    query: |
+      SELECT status, COUNT(*)
+      FROM orders
+      GROUP BY ROLLUP (status);
+    ask: rows
+    distractor_queries:
+      - SELECT status, COUNT(*) FROM orders GROUP BY status;
+    distractor_values: [12, 1]
+    hints:
+      - ROLLUP по одной колонке добавляет к группам одну строку.
+      - "Какую — общий итог по всем статусам."
+      - "1) Сколько статусов? 2) Прибавь итоговую строку."
+      - "6 статусов + ___"
+      - "ROLLUP (status) = GROUPING SETS ((status), ()): шесть групп и строка общего итога, где status равен NULL."
+
+  - id: L09-13
+    type: choose
+    difficulty: 3
+    customer: Обучение
+    title: Честная медиана
+    ticket: Какие запросы вернут медиану суммы заказа за июнь 2026 года (при чётном числе заказов — среднее двух центральных)? Отметьте все верные.
+    tables: [orders]
+    expected_columns: [median]
+    reference: |
+      SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY amount) AS median FROM orders WHERE created_at >= '2026-06-01' AND created_at < '2026-07-01';
+    options:
+      - SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY amount) AS median FROM orders WHERE created_at >= '2026-06-01' AND created_at < '2026-07-01';
+      - SELECT AVG(amount) AS median FROM orders WHERE created_at >= '2026-06-01' AND created_at < '2026-07-01';
+      - SELECT AVG(amount) AS median FROM (SELECT amount, ROW_NUMBER() OVER (ORDER BY amount) AS rn, COUNT(*) OVER () AS n FROM orders WHERE created_at >= '2026-06-01' AND created_at < '2026-07-01') t WHERE rn IN ((n + 1) / 2, (n + 2) / 2);
+      - SELECT (MIN(amount) + MAX(amount)) / 2 AS median FROM orders WHERE created_at >= '2026-06-01' AND created_at < '2026-07-01';
+    expect_correct: [0, 2]
+    hints:
+      - Медиана — это центральное значение отсортированного ряда, а не среднее.
+      - "Середина между минимумом и максимумом — это середина диапазона, а не ряда."
+      - "Целочисленное деление (n + 1) / 2 и (n + 2) / 2 даёт одну позицию при нечётном n и две соседние при чётном."
+      - percentile_cont(0.5) делает то же самое встроенно.
+      - "Верны percentile_cont и ручной расчёт через ROW_NUMBER и COUNT(*) OVER (). Среднее и середина диапазона сильно сдвигаются от крупных заказов."
+
+  - id: L09-14
+    type: target_table
+    difficulty: 2
+    customer: CRM
+    title: Повторные покупатели
+    ticket: Получите таблицу как на образце — по городам клиентов число покупателей, число повторных покупателей (2 и больше заказов) и их доля, от большей доли к меньшей.
+    tables: [orders, customers]
+    expected_columns: [city, buyers, repeat_buyers, repeat_pct]
+    ordered: true
+    order_keys: [repeat_pct]
+    reference: |
+      WITH n AS (
+        SELECT c.city, o.customer_id, COUNT(*) AS cnt
+        FROM orders AS o JOIN customers AS c ON c.customer_id = o.customer_id
+        GROUP BY c.city, o.customer_id
+      )
+      SELECT city, COUNT(*) AS buyers,
+             COUNT(*) FILTER (WHERE cnt >= 2) AS repeat_buyers,
+             round(100.0 * COUNT(*) FILTER (WHERE cnt >= 2) / COUNT(*), 1) AS repeat_pct
+      FROM n
+      GROUP BY city
+      ORDER BY repeat_pct DESC;
+    hints:
+      - Сначала число заказов каждого покупателя, затем агрегация по городу.
+      - "Два уровня группировки: клиент, потом город. Повторных считает FILTER."
+      - "1) CTE: GROUP BY город и клиент, COUNT(*). 2) Снаружи: COUNT(*), COUNT(*) FILTER (WHERE cnt >= 2), доля."
+      - "COUNT(*) FILTER (WHERE cnt >= ___) AS repeat_buyers"
+      - "Доля повторных покупателей — простой и надёжный индикатор лояльности, его считают в любом e-commerce."
+
+  - id: L09-15
+    type: write_query
+    boss: true
+    difficulty: 3
+    customer: Руководство
+    title: "Инцидент: матрица удержания"
+    ticket: |
+      Совет директоров просит retention-матрицу. Когорта клиента — месяц его первого заказа. Возьмите когорты с января по июнь 2025 года.
+      Колонки: cohort (date), size (клиентов в когорте), m1_pct, m2_pct, m3_pct — доля клиентов когорты, сделавших хотя бы один заказ через 1, 2 и 3 месяца после месяца когорты (в процентах, 1 знак).
+      Сортировка по cohort.
+    tables: [orders]
+    expected_columns: [cohort, size, m1_pct, m2_pct, m3_pct]
+    check_column_names: true
+    ordered: true
+    required: [cte]
+    reference: |
+      WITH firsts AS (
+        SELECT customer_id, date_trunc('month', MIN(created_at))::date AS cohort
+        FROM orders GROUP BY customer_id
+      ),
+      activity AS (
+        SELECT DISTINCT f.customer_id, f.cohort,
+               (EXTRACT(YEAR FROM o.created_at) * 12 + EXTRACT(MONTH FROM o.created_at))
+               - (EXTRACT(YEAR FROM f.cohort) * 12 + EXTRACT(MONTH FROM f.cohort)) AS k
+        FROM firsts AS f
+        JOIN orders AS o ON o.customer_id = f.customer_id
+      )
+      SELECT cohort,
+             COUNT(DISTINCT customer_id) AS size,
+             round(100.0 * COUNT(DISTINCT customer_id) FILTER (WHERE k = 1) / COUNT(DISTINCT customer_id), 1) AS m1_pct,
+             round(100.0 * COUNT(DISTINCT customer_id) FILTER (WHERE k = 2) / COUNT(DISTINCT customer_id), 1) AS m2_pct,
+             round(100.0 * COUNT(DISTINCT customer_id) FILTER (WHERE k = 3) / COUNT(DISTINCT customer_id), 1) AS m3_pct
+      FROM activity
+      WHERE cohort >= '2025-01-01' AND cohort < '2025-07-01'
+      GROUP BY cohort
+      ORDER BY cohort;
+    hints:
+      - "Для каждого заказа нужно знать, сколько месяцев прошло от месяца когорты клиента. Дальше это условная агрегация по k = 1, 2, 3."
+      - "Номер месяца = год × 12 + месяц, k — разность номеров месяца заказа и месяца когорты. Размер когорты — все её клиенты (k = 0 есть у каждого)."
+      - "1) firsts: когорта клиента. 2) activity: уникальные пары клиент–k. 3) GROUP BY когорта: размер и COUNT(DISTINCT customer_id) FILTER (WHERE k = …). 4) Фильтр шести когорт."
+      - "COUNT(DISTINCT customer_id) FILTER (WHERE k = 1) / COUNT(DISTINCT customer_id)"
+      - "Матрица удержания строится в три шага: когорта, «возраст» каждой активности в месяцах и условная агрегация. COUNT(DISTINCT) не даёт клиенту с тремя заказами в месяце посчитаться трижды; k = 0 гарантирует, что в размер когорты попадёт каждый её клиент."

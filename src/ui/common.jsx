@@ -7,6 +7,8 @@ export const TYPE_LABEL = {
   predict: 'прогноз',
   fill_blank: 'пропуск',
   choose: 'выбор',
+  optimize: 'ускорение',
+  write_dml: 'скрипт',
 };
 
 export const TYPE_ABOUT = {
@@ -16,6 +18,8 @@ export const TYPE_ABOUT = {
   predict: 'Предскажи результат',
   fill_blank: 'Заполни пропуски',
   choose: 'Выбери верные запросы',
+  optimize: 'Ускорь запрос',
+  write_dml: 'Измени данные скриптом',
 };
 
 export function Stars({ n = 0, max = 3, size = 14 }) {
