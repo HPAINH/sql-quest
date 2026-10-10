@@ -1,6 +1,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import * as yaml from 'js-yaml';
 import { PGlite, types } from '@electric-sql/pglite';
 import { vector } from '@electric-sql/pglite-pgvector';
@@ -9,7 +10,7 @@ import { canonRows, fingerprint, hide, rowKey, sortedKeys, keySeq } from '../src
 import { guard, features } from '../src/engine/sqlscan.js';
 import { parsePlan, checkPlan } from '../src/engine/plan.js';
 
-const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const errors = [];
 const warn = [];
 const fail = (id, msg) => errors.push(`${id}: ${msg}`);
