@@ -1,0 +1,344 @@
+level: 2
+grade: Стажёр
+title: Функции и выражения
+tag: CASE
+book_chapter: 4
+summary: Считаем новые колонки — склеиваем строки, режем даты, раскладываем по категориям через CASE и заменяем NULL.
+theory: |
+  В `SELECT` можно не только брать колонки, но и вычислять новые.
+
+  **Строки:** `first_name || ' ' || last_name` склеивает текст, `lower(email)`, `upper(…)`, `length(…)`, `left(s, 3)`, `split_part(email, '@', 2)` — часть строки после разделителя.
+
+  **Числа:** `+ - * /`, `round(x, 2)`. Внимание: целое делённое на целое даёт целое — `7 / 2 = 3`. Чтобы получить дробь, приведите тип: `7 / 2.0` или `7::numeric / 2`.
+
+  **Даты:** `created_at::date` отрезает время, `date_trunc('month', created_at)` округляет до начала месяца, `EXTRACT(YEAR FROM created_at)` достаёт часть даты, `delivered_at - shipped_at` даёт интервал, `interval '7 days'` — константа-интервал, `age('2026-07-01', birth_date)` — возраст.
+
+  В заданиях «сегодня» — это **2026-07-01**: данные заканчиваются 30 июня 2026 года. Не используйте `now()`, иначе ответ будет меняться каждый день.
+
+  **CASE** раскладывает значения по веткам:
+
+  ```sql
+  CASE
+    WHEN price < 1000 THEN 'бюджет'
+    WHEN price < 10000 THEN 'средний'
+    ELSE 'премиум'
+  END AS segment
+  ```
+
+  Ветки проверяются сверху вниз, срабатывает первая подходящая.
+
+  **NULL-функции:** `COALESCE(phone, 'не указан')` подставляет первое не-NULL значение, `NULLIF(a, b)` возвращает NULL, если a = b.
+tasks:
+  - id: L02-01
+    type: write_query
+    difficulty: 1
+    customer: CRM
+    title: Рассылка в Перми
+    ticket: Для рассылки по Перми нужны full_name (имя и фамилия через пробел) и email.
+    tables: [customers]
+    expected_columns: [full_name, email]
+    check_column_names: true
+    reference: |
+      SELECT first_name || ' ' || last_name AS full_name, email
+      FROM customers
+      WHERE city = 'Пермь';
+    hints:
+      - Колонки full_name в таблице нет — её нужно собрать из двух.
+      - "Таблица customers: first_name, last_name, email, city."
+      - "1) Склей имя, пробел и фамилию. 2) Назови результат full_name. 3) Отфильтруй Пермь."
+      - "SELECT first_name || ___ || last_name AS full_name, email FROM customers WHERE city = 'Пермь';"
+      - "Оператор || склеивает строки; пробел — отдельная строка ' '. Можно и через concat(first_name, ' ', last_name)."
+
+  - id: L02-02
+    type: write_query
+    difficulty: 2
+    customer: Маркетинг
+    title: Почтовые домены
+    ticket: Какими почтовыми сервисами пользуются клиенты? Уникальные домены (часть email после @) в нижнем регистре, по алфавиту. Колонка domain.
+    tables: [customers]
+    expected_columns: [domain]
+    check_column_names: true
+    ordered: true
+    reference: |
+      SELECT DISTINCT lower(split_part(email, '@', 2)) AS domain
+      FROM customers
+      ORDER BY domain;
+    common_mistakes:
+      - result: rows_more
+        explain: "Строк больше, чем нужно. Часть адресов записана с заглавными буквами — приведи домен к нижнему регистру до DISTINCT."
+    hints:
+      - Нужно вырезать часть строки, нормализовать регистр и убрать повторы.
+      - "Функции split_part(email, '@', 2) и lower(…)."
+      - "1) Возьми часть email после @. 2) Приведи к нижнему регистру. 3) DISTINCT и сортировка."
+      - "SELECT DISTINCT lower(split_part(email, '@', ___)) AS domain FROM customers ORDER BY domain;"
+      - "split_part делит строку по разделителю и возвращает кусок с указанным номером. Без lower домены 'mail.ru' и 'mail.RU' считались бы разными."
+
+  - id: L02-03
+    type: write_query
+    difficulty: 1
+    customer: Маркетинг
+    title: Заказы 8 марта
+    ticket: Покажите заказы, сделанные 8 марта 2026 года, — order_id и created_at.
+    tables: [orders]
+    expected_columns: [order_id, created_at]
+    reference: |
+      SELECT order_id, created_at
+      FROM orders
+      WHERE created_at::date = '2026-03-08';
+    hints:
+      - В created_at хранятся дата и время, а сравнить нужно только дату.
+      - "Колонку created_at можно привести к типу date."
+      - "1) Отрежь время. 2) Сравни с датой '2026-03-08'."
+      - "WHERE created_at::___ = '2026-03-08'"
+      - "created_at::date оставляет только дату. Сравнение created_at = '2026-03-08' сработало бы лишь для заказов ровно в 00:00:00. Альтернатива — интервал [8 марта; 9 марта)."
+
+  - id: L02-04
+    type: write_query
+    difficulty: 1
+    customer: CRM
+    title: Декабристы
+    ticket: Нам нужен список клиентов, зарегистрировавшихся в декабре любого года, — customer_id и registered_at.
+    tables: [customers]
+    expected_columns: [customer_id, registered_at]
+    reference: |
+      SELECT customer_id, registered_at
+      FROM customers
+      WHERE EXTRACT(MONTH FROM registered_at) = 12;
+    hints:
+      - Год не важен — нужно достать из даты только месяц.
+      - "EXTRACT(MONTH FROM …) возвращает номер месяца."
+      - "1) Извлеки месяц из registered_at. 2) Сравни с 12."
+      - "WHERE EXTRACT(___ FROM registered_at) = 12"
+      - "EXTRACT достаёт часть даты: YEAR, MONTH, DAY, DOW (день недели), HOUR и т. д."
+
+  - id: L02-05
+    type: write_query
+    difficulty: 2
+    customer: Финансы
+    title: Месяцы крупных заказов
+    ticket: В какие месяцы 2025 года были заказы дороже 150 000 ₽? Уникальные месяцы по порядку, колонка month — первое число месяца (тип date).
+    tables: [orders]
+    expected_columns: [month]
+    check_column_names: true
+    ordered: true
+    reference: |
+      SELECT DISTINCT date_trunc('month', created_at)::date AS month
+      FROM orders
+      WHERE amount > 150000
+        AND created_at >= '2025-01-01'
+        AND created_at < '2026-01-01'
+      ORDER BY month;
+    hints:
+      - Каждый заказ нужно «округлить» до месяца, затем убрать повторы.
+      - "date_trunc('month', …) даёт начало месяца; ::date отрезает время."
+      - "1) Фильтр по сумме и по 2025 году. 2) Округли дату до месяца. 3) DISTINCT и сортировка."
+      - "SELECT DISTINCT date_trunc('___', created_at)::date AS month FROM orders WHERE … ORDER BY month;"
+      - "date_trunc обнуляет все части даты мельче указанной: '2025-03-17 14:05' → '2025-03-01 00:00'. Приведение к date убирает нулевое время."
+
+  - id: L02-06
+    type: write_query
+    difficulty: 2
+    customer: Маркетинг
+    title: Ценовые сегменты
+    ticket: |
+      Разложите наушники (category_id = 9) по ценовым сегментам: product_id, name, price, segment.
+      segment = «бюджет», если цена меньше 1000; «средний» — от 1000 до 9999.99; «премиум» — от 10 000.
+    tables: [products]
+    expected_columns: [product_id, name, price, segment]
+    check_column_names: true
+    required: [case]
+    reference: |
+      SELECT product_id, name, price,
+             CASE
+               WHEN price < 1000 THEN 'бюджет'
+               WHEN price < 10000 THEN 'средний'
+               ELSE 'премиум'
+             END AS segment
+      FROM products
+      WHERE category_id = 9;
+    hints:
+      - Новая колонка зависит от условий — это работа для CASE.
+      - "Таблица products, фильтр category_id = 9."
+      - "1) Ветка для < 1000. 2) Ветка для < 10000. 3) Всё остальное — ELSE."
+      - "CASE WHEN price < 1000 THEN 'бюджет' WHEN price < ___ THEN 'средний' ELSE '___' END AS segment"
+      - "Ветки CASE проверяются по порядку. Раз первая уже отсекла цены < 1000, во второй достаточно проверить price < 10000."
+
+  - id: L02-07
+    type: write_query
+    difficulty: 1
+    customer: Колл-центр
+    title: Телефоны Уфы
+    ticket: Карточки клиентов из Уфы — customer_id и phone. Если телефона нет, в колонке phone должно быть написано «не указан».
+    tables: [customers]
+    expected_columns: [customer_id, phone]
+    check_column_names: true
+    reference: |
+      SELECT customer_id, COALESCE(phone, 'не указан') AS phone
+      FROM customers
+      WHERE city = 'Уфа';
+    hints:
+      - Нужно подменить NULL на текст.
+      - "COALESCE(a, b) возвращает a, если оно не NULL, иначе b."
+      - "1) Оберни phone в COALESCE. 2) Верни колонке имя phone. 3) Фильтр по Уфе."
+      - "SELECT customer_id, COALESCE(phone, '___') AS phone …"
+      - "COALESCE возвращает первый аргумент, который не равен NULL. Без AS phone колонка называлась бы coalesce."
+
+  - id: L02-08
+    type: write_query
+    difficulty: 2
+    customer: Финансы
+    title: Маржа Kvant
+    ticket: |
+      Посчитайте маржу товаров бренда Kvant: name, price, cost, margin (цена минус себестоимость) и margin_pct — маржа в процентах от цены, округлённая до 1 знака.
+    tables: [products]
+    expected_columns: [name, price, cost, margin, margin_pct]
+    check_column_names: true
+    reference: |
+      SELECT name, price, cost,
+             price - cost AS margin,
+             round((price - cost) / price * 100, 1) AS margin_pct
+      FROM products
+      WHERE brand = 'Kvant';
+    hints:
+      - Две вычисляемые колонки — разница и процент.
+      - "Таблица products: price, cost, brand. Для округления — round(x, 1)."
+      - "1) margin = price − cost. 2) Процент = margin / price × 100. 3) Округли до 1 знака."
+      - "round((price - cost) / price * ___, 1) AS margin_pct"
+      - "price и cost имеют тип numeric, поэтому деление дробное. Скобки нужны, чтобы вычитание выполнилось раньше деления."
+
+  - id: L02-09
+    type: write_query
+    difficulty: 2
+    customer: Логистика
+    title: Долгие доставки
+    ticket: Найдите доставки, которые шли дольше 7 дней от отгрузки до вручения, — order_id, shipped_at, delivered_at.
+    tables: [deliveries]
+    expected_columns: [order_id, shipped_at, delivered_at]
+    reference: |
+      SELECT order_id, shipped_at, delivered_at
+      FROM deliveries
+      WHERE delivered_at - shipped_at > interval '7 days';
+    hints:
+      - Разность двух моментов времени — это интервал.
+      - "Таблица deliveries: shipped_at, delivered_at."
+      - "1) Вычти shipped_at из delivered_at. 2) Сравни с интервалом в 7 дней."
+      - "WHERE delivered_at - shipped_at > interval '___'"
+      - "timestamp − timestamp даёт interval, его можно сравнивать с interval '7 days'. Недоставленные заказы (delivered_at IS NULL) отсеются сами — разность с NULL даёт NULL."
+
+  - id: L02-10
+    type: fix_bug
+    difficulty: 2
+    customer: Финансы
+    title: Скидка ноль процентов
+    ticket: Финансы хотят видеть скидку промокодов в долях (0.15 вместо 15) — code, discount_pct, share. Запрос показывает share = 0 у всех кодов. Почините.
+    tables: [promo_codes]
+    expected_columns: [code, discount_pct, share]
+    check_column_names: true
+    broken_query: |
+      SELECT code, discount_pct, discount_pct / 100 AS share
+      FROM promo_codes;
+    reference: |
+      SELECT code, discount_pct, discount_pct / 100.0 AS share
+      FROM promo_codes;
+    hints:
+      - Подумай, какого типа discount_pct и что бывает при делении таких чисел.
+      - "discount_pct — целое число (int)."
+      - "1) Целое / целое = целое, дробная часть отбрасывается. 2) Сделай один из операндов дробным."
+      - "discount_pct / ___ AS share"
+      - "15 / 100 = 0 в целочисленной арифметике. Достаточно сделать делитель дробным (100.0) или привести тип: discount_pct::numeric / 100."
+
+  - id: L02-11
+    type: fix_bug
+    difficulty: 1
+    customer: HR
+    title: Аналитики потерялись
+    ticket: Запрос «все сотрудники отдела Аналитика» падает с ошибкой «колонка не существует». Почините.
+    tables: [employees]
+    expected_columns: [full_name, position]
+    broken_query: |
+      SELECT full_name, position
+      FROM employees
+      WHERE department = "Аналитика";
+    reference: |
+      SELECT full_name, position
+      FROM employees
+      WHERE department = 'Аналитика';
+    hints:
+      - СУБД решила, что «Аналитика» — это имя колонки.
+      - "Посмотри на кавычки вокруг текста."
+      - "1) Двойные кавычки — для имён. 2) Одинарные — для значений."
+      - "WHERE department = ___Аналитика___"
+      - "В PostgreSQL \"…\" — это идентификатор (имя таблицы или колонки), а '…' — строковое значение."
+
+  - id: L02-12
+    type: predict
+    difficulty: 2
+    customer: Обучение
+    title: Цепочка NULL-функций
+    ticket: Что вернёт запрос?
+    tables: []
+    query: |
+      SELECT COALESCE(NULL, NULLIF(5, 5), 7);
+    ask: value
+    distractor_values: ['5', 'NULL', '0']
+    hints:
+      - Разбери выражение изнутри наружу.
+      - "NULLIF(a, b) возвращает NULL, если a = b."
+      - "1) Вычисли NULLIF(5, 5). 2) Подставь в COALESCE. 3) Найди первое не-NULL значение."
+      - "COALESCE(NULL, NULL, 7) = ___"
+      - "NULLIF(5, 5) = NULL, потому что аргументы равны. COALESCE пропускает два NULL и возвращает 7."
+
+  - id: L02-13
+    type: choose
+    difficulty: 2
+    customer: Обучение
+    title: Весь 2025 год
+    ticket: Какие запросы вернут все заказы 2025 года, включая заказы 31 декабря в 23:59? Отметьте все верные.
+    tables: [orders]
+    expected_columns: [order_id]
+    reference: |
+      SELECT order_id FROM orders WHERE created_at >= '2025-01-01' AND created_at < '2026-01-01';
+    options:
+      - SELECT order_id FROM orders WHERE created_at BETWEEN '2025-01-01' AND '2025-12-31';
+      - SELECT order_id FROM orders WHERE created_at >= '2025-01-01' AND created_at < '2026-01-01';
+      - SELECT order_id FROM orders WHERE EXTRACT(YEAR FROM created_at) = 2025;
+      - SELECT order_id FROM orders WHERE created_at > '2025-01-01' AND created_at <= '2025-12-31';
+    hints:
+      - "Строка '2025-12-31' превращается в момент времени 2025-12-31 00:00:00."
+      - "Заказ 31 декабря в 15:00 больше, чем '2025-12-31 00:00:00'."
+      - "1) Отбрось варианты, где верхняя граница — '2025-12-31'. 2) Проверь оставшиеся."
+      - Полуоткрытый интервал и EXTRACT года не теряют последний день.
+      - "BETWEEN '2025-01-01' AND '2025-12-31' обрывается на полуночи 31 декабря и теряет заказы последнего дня. Верны полуоткрытый интервал [2025-01-01; 2026-01-01) и EXTRACT(YEAR …) = 2025."
+
+  - id: L02-14
+    type: write_query
+    boss: true
+    difficulty: 3
+    customer: CRM
+    title: "Инцидент: письмо старожилам"
+    ticket: |
+      Письмо для клиентов из Санкт-Петербурга, зарегистрировавшихся в 2023 году, ушло с пустыми полями. Соберите данные заново:
+      customer_id; greeting — «Здравствуйте, Имя!»; email в нижнем регистре; tenure — «ветеран», если регистрация до 1 июля 2023 года, иначе «новичок»; phone — если телефона нет, «нет телефона».
+      Сортировка по дате регистрации.
+    tables: [customers]
+    expected_columns: [customer_id, greeting, email, tenure, phone]
+    check_column_names: true
+    ordered: true
+    required: [case]
+    reference: |
+      SELECT customer_id,
+             'Здравствуйте, ' || first_name || '!' AS greeting,
+             lower(email) AS email,
+             CASE WHEN registered_at < '2023-07-01' THEN 'ветеран' ELSE 'новичок' END AS tenure,
+             COALESCE(phone, 'нет телефона') AS phone
+      FROM customers
+      WHERE city = 'Санкт-Петербург'
+        AND registered_at >= '2023-01-01'
+        AND registered_at < '2024-01-01'
+      ORDER BY registered_at;
+    hints:
+      - Здесь все инструменты уровня — склейка строк, lower, CASE, COALESCE и фильтр по году.
+      - "Таблица customers. Сортировать можно по колонке, которой нет в SELECT."
+      - "1) Фильтр: город и 2023 год. 2) Пять колонок с нужными именами. 3) ORDER BY registered_at."
+      - "SELECT customer_id, 'Здравствуйте, ' || first_name || '!' AS greeting, lower(email) AS email, CASE WHEN registered_at < '2023-07-01' THEN 'ветеран' ELSE 'новичок' END AS tenure, COALESCE(phone, 'нет телефона') AS phone FROM customers WHERE … ORDER BY registered_at;"
+      - "Каждая колонка — отдельное выражение со своим псевдонимом. Фильтр по году — полуоткрытый интервал, сортировка идёт по исходной колонке registered_at, которой нет в результате."

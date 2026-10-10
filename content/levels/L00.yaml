@@ -1,0 +1,341 @@
+level: 0
+grade: Стажёр
+title: Первые запросы
+tag: SELECT
+book_chapter: 2
+summary: Достаём данные из одной таблицы, переименовываем колонки, сортируем и ограничиваем выдачу.
+theory: |
+  Любой запрос на чтение начинается с двух слов: **что** взять и **откуда**.
+
+  ```sql
+  SELECT name, price
+  FROM products;
+  ```
+
+  `SELECT *` возвращает все колонки — удобно, чтобы осмотреться, но в отчётах лучше перечислять колонки явно.
+
+  **Псевдоним** переименовывает колонку в результате: `price AS price_rub`. Слово `AS` можно опустить, но с ним запрос читается легче.
+
+  **Сортировка** — `ORDER BY колонка [ASC | DESC]`. По умолчанию `ASC` — по возрастанию. Можно сортировать по нескольким колонкам: `ORDER BY department, salary DESC`.
+
+  **Ограничение** — `LIMIT n` оставляет первые n строк, `OFFSET k` пропускает первые k. Без `ORDER BY` порядок строк не гарантирован, поэтому `LIMIT` почти всегда идёт вместе с сортировкой.
+
+  **DISTINCT** убирает повторяющиеся строки: `SELECT DISTINCT city FROM customers`.
+
+  Порядок записи: `SELECT … FROM … ORDER BY … LIMIT … OFFSET …`.
+tasks:
+  - id: L00-01
+    type: write_query
+    difficulty: 1
+    customer: Каталог
+    title: Справочник категорий
+    ticket: Пришлите, пожалуйста, справочник категорий — id и название каждой категории.
+    tables: [categories]
+    expected_columns: [category_id, name]
+    reference: |
+      SELECT category_id, name
+      FROM categories;
+    hints:
+      - Нужна одна таблица и две колонки из неё — это базовая связка SELECT … FROM.
+      - "Таблица categories, колонки category_id и name."
+      - "1) Перечисли колонки после SELECT через запятую. 2) После FROM укажи таблицу."
+      - "SELECT ___, ___ FROM ___;"
+      - SELECT перечисляет колонки результата в нужном порядке, FROM говорит, из какой таблицы их брать. Фильтры и сортировка не нужны.
+
+  - id: L00-02
+    type: write_query
+    difficulty: 1
+    customer: Логистика
+    title: Все склады
+    ticket: Выгрузите таблицу складов целиком, со всеми колонками.
+    tables: [warehouses]
+    expected_columns: [warehouse_id, name, city]
+    reference: |
+      SELECT *
+      FROM warehouses;
+    hints:
+      - Когда нужны все колонки, их не обязательно перечислять.
+      - "Таблица warehouses; звёздочка * означает «все колонки»."
+      - "1) SELECT со звёздочкой. 2) FROM warehouses."
+      - "SELECT ___ FROM warehouses;"
+      - "SELECT * возвращает все колонки в том порядке, в котором они объявлены в таблице: warehouse_id, name, city."
+
+  - id: L00-03
+    type: write_query
+    difficulty: 1
+    customer: HR
+    title: Кто есть кто
+    ticket: Для оргструктуры нужен список сотрудников с двумя колонками — employee (имя) и job (должность).
+    tables: [employees]
+    expected_columns: [employee, job]
+    check_column_names: true
+    reference: |
+      SELECT full_name AS employee,
+             position AS job
+      FROM employees;
+    hints:
+      - Колонки в результате должны называться иначе, чем в таблице — нужны псевдонимы.
+      - "Таблица employees: имя лежит в full_name, должность — в position."
+      - "1) Выбери full_name и переименуй его. 2) Выбери position и переименуй его."
+      - "SELECT full_name AS ___, position AS ___ FROM employees;"
+      - "AS задаёт имя колонки в результате. Исходные колонки full_name и position становятся employee и job — так требует заказчик."
+
+  - id: L00-04
+    type: write_query
+    difficulty: 1
+    customer: HR
+    title: Зарплатная ведомость
+    ticket: Покажите сотрудников по убыванию зарплаты — колонки full_name и salary.
+    tables: [employees]
+    expected_columns: [full_name, salary]
+    ordered: true
+    order_keys: [salary]
+    reference: |
+      SELECT full_name, salary
+      FROM employees
+      ORDER BY salary DESC;
+    hints:
+      - Здесь важен порядок строк — нужна сортировка.
+      - "Таблица employees, сортировать по колонке salary."
+      - "1) Выбери full_name и salary. 2) Отсортируй по зарплате от большей к меньшей."
+      - "SELECT full_name, salary FROM employees ORDER BY salary ___;"
+      - "ORDER BY salary DESC ставит самые большие зарплаты наверх. Без DESC сортировка шла бы по возрастанию."
+
+  - id: L00-05
+    type: write_query
+    difficulty: 1
+    customer: Маркетинг
+    title: Топ-10 по цене
+    ticket: Для баннера «Флагманы» нужны 10 самых дорогих товаров каталога — name и price.
+    tables: [products]
+    expected_columns: [name, price]
+    ordered: true
+    order_keys: [price]
+    required: [order_by, limit]
+    reference: |
+      SELECT name, price
+      FROM products
+      ORDER BY price DESC
+      LIMIT 10;
+    hints:
+      - «Топ-N» в SQL — это всегда пара «сортировка + ограничение».
+      - "Таблица products, сортировка по price."
+      - "1) Отсортируй товары от дорогих к дешёвым. 2) Оставь первые 10 строк."
+      - "SELECT name, price FROM products ORDER BY ___ ___ LIMIT ___;"
+      - "Сначала ORDER BY price DESC выстраивает товары от дорогих к дешёвым, затем LIMIT 10 отрезает первые десять. LIMIT без ORDER BY вернул бы случайные 10 строк."
+
+  - id: L00-06
+    type: write_query
+    difficulty: 1
+    customer: Логистика
+    title: География доставок
+    ticket: В какие города мы вообще доставляли заказы? Нужен уникальный список delivery_city по алфавиту.
+    tables: [orders]
+    expected_columns: [delivery_city]
+    ordered: true
+    order_keys: [delivery_city]
+    required: [distinct]
+    bonus:
+      text: Решить через DISTINCT, без GROUP BY
+      forbidden: [group_by]
+    reference: |
+      SELECT DISTINCT delivery_city
+      FROM orders
+      ORDER BY delivery_city;
+    hints:
+      - В таблице заказов один город встречается тысячи раз — нужны только уникальные значения.
+      - "Таблица orders, колонка delivery_city."
+      - "1) Выбери город с ключевым словом, убирающим повторы. 2) Отсортируй по алфавиту."
+      - "SELECT ___ delivery_city FROM orders ORDER BY delivery_city;"
+      - "DISTINCT схлопывает одинаковые строки в одну. ORDER BY без DESC сортирует строки по алфавиту."
+
+  - id: L00-07
+    type: write_query
+    difficulty: 2
+    customer: Каталог
+    title: Вторая страница
+    ticket: Каталог показывает товары страницами по 20 штук, отсортированными по product_id. Покажите вторую страницу — product_id и name.
+    tables: [products]
+    expected_columns: [product_id, name]
+    ordered: true
+    required: [order_by, limit]
+    reference: |
+      SELECT product_id, name
+      FROM products
+      ORDER BY product_id
+      LIMIT 20 OFFSET 20;
+    hints:
+      - Чтобы получить вторую страницу, первую надо пропустить.
+      - "Таблица products. Понадобятся ORDER BY, LIMIT и OFFSET."
+      - "1) Отсортируй по product_id. 2) Пропусти 20 строк первой страницы. 3) Возьми следующие 20."
+      - "SELECT product_id, name FROM products ORDER BY product_id LIMIT ___ OFFSET ___;"
+      - "OFFSET 20 пропускает первую страницу, LIMIT 20 берёт вторую. Страница N начинается с OFFSET (N − 1) × размер страницы."
+
+  - id: L00-08
+    type: target_table
+    difficulty: 2
+    customer: Маркетинг
+    title: Витрина промокодов
+    ticket: Получите таблицу промокодов как на образце — сначала самые большие скидки, при равной скидке по алфавиту.
+    tables: [promo_codes]
+    expected_columns: [code, discount_pct]
+    ordered: true
+    order_keys: [discount_pct, code]
+    reference: |
+      SELECT code, discount_pct
+      FROM promo_codes
+      ORDER BY discount_pct DESC, code;
+    hints:
+      - Посмотри на образец — здесь сортировка сразу по двум колонкам.
+      - "Таблица promo_codes: code и discount_pct."
+      - "1) Сначала отсортируй по скидке по убыванию. 2) Внутри одинаковой скидки — по коду по возрастанию."
+      - "SELECT code, discount_pct FROM promo_codes ORDER BY ___ DESC, ___;"
+      - "В ORDER BY можно перечислить несколько колонок: вторая работает только для строк, у которых первая совпадает. У каждой колонки своё направление."
+
+  - id: L00-09
+    type: fix_bug
+    difficulty: 1
+    customer: Маркетинг
+    title: Не те флагманы
+    ticket: Аналитик написал запрос «5 самых дорогих товаров», но в отчёт попали самые дешёвые. Почините запрос.
+    tables: [products]
+    expected_columns: [name, price]
+    ordered: true
+    order_keys: [price]
+    broken_query: |
+      SELECT name, price
+      FROM products
+      ORDER BY price
+      LIMIT 5;
+    reference: |
+      SELECT name, price
+      FROM products
+      ORDER BY price DESC
+      LIMIT 5;
+    hints:
+      - Проблема в направлении сортировки.
+      - Запрос работает с таблицей products — таблица и колонки выбраны верно.
+      - "1) Найди ORDER BY. 2) Подумай, в каком порядке он сортирует по умолчанию."
+      - "… ORDER BY price ___ LIMIT 5;"
+      - "По умолчанию ORDER BY сортирует по возрастанию (ASC), поэтому сверху оказывались самые дешёвые товары. DESC разворачивает порядок."
+
+  - id: L00-10
+    type: fix_bug
+    difficulty: 1
+    customer: Каталог
+    title: Список брендов
+    ticket: Нужен уникальный список брендов по алфавиту, но запрос падает с ошибкой.
+    tables: [products]
+    expected_columns: [brand]
+    ordered: true
+    broken_query: |
+      SELECT DISTINCT brand
+      FROM products
+      ORDERBY brand;
+    reference: |
+      SELECT DISTINCT brand
+      FROM products
+      ORDER BY brand;
+    hints:
+      - Ошибка синтаксическая — прочитай сообщение СУБД и посмотри, на какое слово она указывает.
+      - Таблица и колонки верные, проблема в ключевых словах.
+      - "1) Найди сортировку. 2) Проверь, как правильно пишется это ключевое слово."
+      - "… ORDER ___ brand;"
+      - "ORDER BY — это два слова. Слитное ORDERBY СУБД не понимает и сообщает о синтаксической ошибке."
+
+  - id: L00-11
+    type: predict
+    difficulty: 1
+    customer: Обучение
+    title: Сколько статусов
+    ticket: Сколько строк вернёт этот запрос?
+    tables: [orders]
+    query: |
+      SELECT DISTINCT status
+      FROM orders;
+    ask: rows
+    distractor_queries:
+      - SELECT status FROM orders;
+    distractor_values: [1, 5]
+    hints:
+      - DISTINCT оставляет только уникальные значения.
+      - "В orders тысячи строк, но статусов заказа — небольшой фиксированный набор."
+      - "1) Вспомни, какие статусы бывают у заказа. 2) Посчитай их."
+      - "Статусы: new, paid, shipped, delivered, cancelled, ___."
+      - "DISTINCT по колонке status возвращает по одной строке на каждый статус: new, paid, shipped, delivered, cancelled, returned."
+
+  - id: L00-12
+    type: fill_blank
+    difficulty: 1
+    customer: CRM
+    title: Новички
+    ticket: Покажите 5 последних зарегистрировавшихся клиентов — first_name, last_name, registered_at, самые свежие сверху.
+    tables: [customers]
+    expected_columns: [first_name, last_name, registered_at]
+    ordered: true
+    template: |
+      SELECT first_name, last_name, registered_at
+      FROM customers
+      ORDER BY ___ ___
+      LIMIT 5;
+    reference: |
+      SELECT first_name, last_name, registered_at
+      FROM customers
+      ORDER BY registered_at DESC
+      LIMIT 5;
+    hints:
+      - Последние — значит самые поздние даты.
+      - "Сортировать нужно по колонке registered_at."
+      - "1) Укажи колонку сортировки. 2) Укажи направление так, чтобы новые были сверху."
+      - "ORDER BY registered_at ___"
+      - "Даты сравниваются как время: более поздняя дата больше. DESC ставит самые свежие регистрации наверх."
+
+  - id: L00-13
+    type: choose
+    difficulty: 1
+    customer: Обучение
+    title: Самые первые заказы
+    ticket: Какой запрос вернёт три самых ранних заказа (order_id, created_at)? Отметьте все верные.
+    tables: [orders]
+    expected_columns: [order_id, created_at]
+    ordered: true
+    reference: |
+      SELECT order_id, created_at FROM orders ORDER BY created_at LIMIT 3;
+    options:
+      - SELECT order_id, created_at FROM orders ORDER BY created_at LIMIT 3;
+      - SELECT order_id, created_at FROM orders ORDER BY created_at DESC LIMIT 3;
+      - SELECT order_id, created_at FROM orders ORDER BY order_id DESC LIMIT 3;
+      - SELECT order_id, created_at FROM orders ORDER BY created_at ASC LIMIT 3;
+    hints:
+      - Ранние — значит самые маленькие даты.
+      - "Смотри на ORDER BY и его направление."
+      - "1) Отбрось варианты с DESC. 2) Проверь, по какой колонке идёт сортировка."
+      - ASC и отсутствие направления — это одно и то же.
+      - "Подходят оба варианта с сортировкой по created_at по возрастанию: ASC — направление по умолчанию."
+
+  - id: L00-14
+    type: write_query
+    boss: true
+    difficulty: 3
+    customer: Маркетинг
+    title: "Инцидент: вторая десятка"
+    ticket: |
+      Витрина «Премиум» показывает только первую десятку самых дорогих товаров, а маркетинг запускает вторую витрину. Нужны товары, которые занимают места с 11-го по 20-е по цене (от дорогих к дешёвым).
+      Колонки: product (название товара), brand, price.
+    tables: [products]
+    expected_columns: [product, brand, price]
+    check_column_names: true
+    ordered: true
+    order_keys: [price]
+    required: [order_by, limit]
+    reference: |
+      SELECT name AS product, brand, price
+      FROM products
+      ORDER BY price DESC
+      LIMIT 10 OFFSET 10;
+    hints:
+      - Это комбинация трёх приёмов уровня — псевдонимов, сортировки и постраничной выдачи.
+      - "Таблица products: name, brand, price. Колонку name нужно переименовать."
+      - "1) Переименуй name в product. 2) Отсортируй от дорогих к дешёвым. 3) Пропусти первую десятку и возьми следующую."
+      - "SELECT name AS product, brand, price FROM products ORDER BY price DESC LIMIT ___ OFFSET ___;"
+      - "Места 11–20 — это вторая «страница» из 10 строк: OFFSET 10 пропускает первую десятку, LIMIT 10 берёт следующую."

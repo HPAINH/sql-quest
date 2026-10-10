@@ -1,0 +1,120 @@
+categories:
+  about: Дерево категорий каталога
+  columns:
+    category_id: id категории
+    name: название
+    parent_id: родительская категория (NULL у корня)
+customers:
+  about: Клиенты интернет-магазина
+  columns:
+    customer_id: id клиента
+    first_name: имя
+    last_name: фамилия
+    email: почта (бывают дубли в разном регистре)
+    phone: телефон, может быть NULL
+    city: город клиента
+    registered_at: дата и время регистрации
+    birth_date: дата рождения, может быть NULL
+products:
+  about: Товары каталога
+  columns:
+    product_id: id товара
+    category_id: категория → categories
+    name: название
+    brand: бренд
+    price: текущая цена, ₽
+    cost: себестоимость, ₽
+    is_active: продаётся ли сейчас
+    created_at: дата добавления в каталог
+orders:
+  about: Заказы
+  columns:
+    order_id: id заказа
+    customer_id: клиент → customers
+    created_at: дата и время заказа
+    status: new, paid, shipped, delivered, cancelled, returned
+    delivery_city: город доставки
+    delivery_address: адрес, может быть NULL
+    amount: сумма к оплате с учётом промокода, ₽
+order_items:
+  about: Позиции заказов
+  columns:
+    order_id: заказ → orders
+    product_id: товар → products
+    quantity: количество
+    price: цена за штуку на момент заказа, ₽
+payments:
+  about: Платежи по заказам
+  columns:
+    payment_id: id платежа
+    order_id: заказ → orders
+    amount: сумма платежа, ₽
+    paid_at: время платежа
+    method: card, sbp, cash_on_delivery, installments
+deliveries:
+  about: Отгрузки и доставки
+  columns:
+    order_id: заказ → orders
+    shipped_at: отгружен
+    delivered_at: вручён, NULL если ещё в пути
+    courier: служба доставки
+promo_codes:
+  about: Промокоды
+  columns:
+    code: промокод
+    discount_pct: скидка, %
+    valid_from: действует с
+    valid_to: действует по
+order_promos:
+  about: Промокоды, применённые к заказам
+  columns:
+    order_id: заказ → orders
+    code: промокод → promo_codes
+reviews:
+  about: Отзывы о товарах
+  columns:
+    review_id: id отзыва
+    product_id: товар → products
+    customer_id: автор → customers
+    rating: оценка 1–5
+    text: текст, может быть NULL
+    created_at: время отзыва
+employees:
+  about: Сотрудники ShopData
+  columns:
+    employee_id: id сотрудника
+    full_name: имя и фамилия
+    manager_id: руководитель → employees
+    department: отдел
+    position: должность
+    hired_at: дата найма
+    salary: оклад, ₽
+warehouses:
+  about: Склады
+  columns:
+    warehouse_id: id склада
+    name: название
+    city: город
+stock:
+  about: Остатки товаров на складах
+  columns:
+    warehouse_id: склад → warehouses
+    product_id: товар → products
+    qty: остаток, шт.
+    updated_at: время обновления
+events:
+  about: События на сайте (для будущих уровней)
+  columns:
+    event_id: id события
+    customer_id: клиент → customers
+    session_id: сессия
+    event_type: view, add_to_cart, checkout, purchase
+    event_ts: время события
+    props: детали в JSONB
+ab_assignments:
+  about: Распределение клиентов по A/B-тестам
+  columns:
+    customer_id: клиент → customers
+    experiment: название теста
+    variant: группа A или B
+    assigned_at: время распределения

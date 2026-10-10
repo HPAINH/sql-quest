@@ -1,0 +1,400 @@
+level: 3
+grade: Junior
+title: Агрегация
+tag: GROUP
+book_chapter: 5
+summary: Сворачиваем тысячи строк в отчёт — считаем, суммируем, группируем и фильтруем группы.
+theory: |
+  **Агрегатные функции** сворачивают много строк в одно значение: `COUNT(*)`, `COUNT(колонка)`, `SUM`, `AVG`, `MIN`, `MAX`.
+
+  `COUNT(*)` считает строки, `COUNT(phone)` — только строки, где phone не NULL. `COUNT(DISTINCT customer_id)` — число уникальных значений.
+
+  **GROUP BY** считает агрегаты отдельно для каждой группы:
+
+  ```sql
+  SELECT status, COUNT(*) AS orders_cnt
+  FROM orders
+  GROUP BY status;
+  ```
+
+  Правило: каждая колонка в `SELECT` либо стоит в `GROUP BY`, либо обёрнута в агрегатную функцию. Иначе СУБД не знает, какое из значений группы показать.
+
+  **WHERE и HAVING.** `WHERE` фильтрует строки до группировки, `HAVING` — группы после неё. Условие на агрегат (`COUNT(*) > 10`) можно писать только в `HAVING`.
+
+  **FILTER** считает агрегат по части строк группы:
+
+  ```sql
+  COUNT(*) FILTER (WHERE status = 'cancelled') AS cancelled_cnt
+  ```
+
+  Порядок выполнения: `FROM → WHERE → GROUP BY → HAVING → SELECT → ORDER BY → LIMIT`. Поэтому псевдоним из `SELECT` можно использовать в `ORDER BY`, но не в `WHERE`.
+tasks:
+  - id: L03-01
+    type: write_query
+    difficulty: 1
+    customer: Руководство
+    title: Сколько у нас клиентов
+    ticket: Сколько всего клиентов в базе? Одна колонка total_customers.
+    tables: [customers]
+    expected_columns: [total_customers]
+    check_column_names: true
+    reference: |
+      SELECT COUNT(*) AS total_customers
+      FROM customers;
+    hints:
+      - Нужна одна цифра — количество строк.
+      - "COUNT(*) считает строки таблицы."
+      - "1) Посчитай строки в customers. 2) Дай колонке имя."
+      - "SELECT COUNT(___) AS total_customers FROM customers;"
+      - "Без GROUP BY агрегат сворачивает всю таблицу в одну строку."
+
+  - id: L03-02
+    type: write_query
+    difficulty: 1
+    customer: Операционный отдел
+    title: Заказы по статусам
+    ticket: Сколько заказов в каждом статусе? Колонки status и orders_cnt, по убыванию количества.
+    tables: [orders]
+    expected_columns: [status, orders_cnt]
+    check_column_names: true
+    ordered: true
+    order_keys: [orders_cnt]
+    required: [group_by]
+    reference: |
+      SELECT status, COUNT(*) AS orders_cnt
+      FROM orders
+      GROUP BY status
+      ORDER BY orders_cnt DESC;
+    hints:
+      - Подсчёт «для каждого статуса» — это группировка.
+      - "Таблица orders, группировать по status."
+      - "1) GROUP BY status. 2) COUNT(*) в каждой группе. 3) Сортировка по количеству."
+      - "SELECT status, COUNT(*) AS orders_cnt FROM orders GROUP BY ___ ORDER BY orders_cnt DESC;"
+      - "GROUP BY status делит заказы на группы по статусу, COUNT(*) считает строки в каждой. Псевдоним orders_cnt можно использовать в ORDER BY."
+
+  - id: L03-03
+    type: write_query
+    difficulty: 2
+    customer: Финансы
+    title: Выручка по месяцам
+    ticket: Выручка по месяцам 2025 года — сумма amount по доставленным заказам (status = 'delivered'). Колонки month (первое число месяца, тип date) и revenue, по месяцам.
+    tables: [orders]
+    expected_columns: [month, revenue]
+    check_column_names: true
+    ordered: true
+    order_keys: [month]
+    reference: |
+      SELECT date_trunc('month', created_at)::date AS month,
+             SUM(amount) AS revenue
+      FROM orders
+      WHERE status = 'delivered'
+        AND created_at >= '2025-01-01'
+        AND created_at < '2026-01-01'
+      GROUP BY month
+      ORDER BY month;
+    hints:
+      - Сначала отфильтруй заказы, потом сгруппируй по месяцу.
+      - "Группировать можно по выражению date_trunc('month', created_at)."
+      - "1) WHERE: доставленные и 2025 год. 2) GROUP BY по месяцу. 3) SUM(amount)."
+      - "SELECT date_trunc('month', created_at)::date AS month, SUM(amount) AS revenue FROM orders WHERE … GROUP BY ___ ORDER BY month;"
+      - "Группировать можно по любому выражению. В PostgreSQL в GROUP BY можно сослаться на псевдоним из SELECT (month)."
+
+  - id: L03-04
+    type: write_query
+    difficulty: 2
+    customer: Финансы
+    title: Средний чек по городам
+    ticket: Средний чек доставленных заказов по городам доставки — delivery_city, avg_check (округлить до копеек), по убыванию среднего чека.
+    tables: [orders]
+    expected_columns: [delivery_city, avg_check]
+    check_column_names: true
+    ordered: true
+    order_keys: [avg_check]
+    reference: |
+      SELECT delivery_city, round(AVG(amount), 2) AS avg_check
+      FROM orders
+      WHERE status = 'delivered'
+      GROUP BY delivery_city
+      ORDER BY avg_check DESC;
+    hints:
+      - Средний чек — это AVG от суммы заказа.
+      - "Таблица orders: delivery_city, amount, status."
+      - "1) Только delivered. 2) Группа — город. 3) round(AVG(amount), 2)."
+      - "SELECT delivery_city, round(AVG(amount), ___) AS avg_check … GROUP BY delivery_city ORDER BY avg_check DESC;"
+      - "AVG считает среднее по группе, round(…, 2) округляет до копеек. Сортировать удобно по псевдониму."
+
+  - id: L03-05
+    type: write_query
+    difficulty: 2
+    customer: Каталог
+    title: Крупные бренды
+    ticket: Какие бренды представлены больше чем 20 активными товарами? Колонки brand и products_cnt.
+    tables: [products]
+    expected_columns: [brand, products_cnt]
+    check_column_names: true
+    required: [having]
+    reference: |
+      SELECT brand, COUNT(*) AS products_cnt
+      FROM products
+      WHERE is_active
+      GROUP BY brand
+      HAVING COUNT(*) > 20;
+    hints:
+      - Одно условие касается строк (активность), другое — групп (количество).
+      - "Фильтр строк — WHERE, фильтр групп — HAVING."
+      - "1) WHERE is_active. 2) GROUP BY brand. 3) HAVING на количество."
+      - "… WHERE is_active GROUP BY brand HAVING COUNT(*) ___ 20;"
+      - "WHERE отбрасывает неактивные товары ещё до группировки, HAVING оставляет только бренды, где после этого осталось больше 20 товаров."
+
+  - id: L03-06
+    type: write_query
+    difficulty: 2
+    customer: Маркетинг
+    title: Уникальные покупатели
+    ticket: Сколько уникальных покупателей делали заказы в каждом месяце 2026 года? Колонки month (date) и buyers, по месяцам.
+    tables: [orders]
+    expected_columns: [month, buyers]
+    check_column_names: true
+    ordered: true
+    order_keys: [month]
+    reference: |
+      SELECT date_trunc('month', created_at)::date AS month,
+             COUNT(DISTINCT customer_id) AS buyers
+      FROM orders
+      WHERE created_at >= '2026-01-01'
+      GROUP BY month
+      ORDER BY month;
+    common_mistakes:
+      - result: values_bigger
+        explain: "Похоже, ты считаешь заказы, а не покупателей. Один клиент может сделать несколько заказов за месяц — нужен COUNT(DISTINCT customer_id)."
+    hints:
+      - Один клиент может сделать несколько заказов — его нужно считать один раз.
+      - "COUNT(DISTINCT колонка) считает уникальные значения."
+      - "1) Заказы с 2026-01-01. 2) Группировка по месяцу. 3) Уникальные customer_id."
+      - "COUNT(___ customer_id) AS buyers"
+      - "COUNT(customer_id) посчитал бы заказы. DISTINCT внутри COUNT оставляет по одному вхождению каждого клиента в группе."
+
+  - id: L03-07
+    type: write_query
+    difficulty: 2
+    customer: Финансы
+    title: Крупные платежи
+    ticket: По каждому способу оплаты — method, payments_cnt (всего платежей) и big_cnt (платежей больше 50 000 ₽).
+    tables: [payments]
+    expected_columns: [method, payments_cnt, big_cnt]
+    check_column_names: true
+    bonus:
+      text: Использовать FILTER
+      required: [filter]
+    reference: |
+      SELECT method,
+             COUNT(*) AS payments_cnt,
+             COUNT(*) FILTER (WHERE amount > 50000) AS big_cnt
+      FROM payments
+      GROUP BY method;
+    hints:
+      - Два счётчика в одной группе — второй считает только часть строк.
+      - "FILTER (WHERE …) после агрегата ограничивает строки, которые он видит."
+      - "1) GROUP BY method. 2) COUNT(*) — всего. 3) COUNT(*) с фильтром — крупные."
+      - "COUNT(*) FILTER (WHERE amount > ___) AS big_cnt"
+      - "FILTER работает как WHERE, но только для одного агрегата. Альтернатива — SUM(CASE WHEN amount > 50000 THEN 1 ELSE 0 END)."
+
+  - id: L03-08
+    type: write_query
+    difficulty: 2
+    customer: Логистика
+    title: Курьерские службы
+    ticket: Для каждого курьера — courier, first_shipment (первая отгрузка), last_shipment (последняя), deliveries_cnt (число доставок).
+    tables: [deliveries]
+    expected_columns: [courier, first_shipment, last_shipment, deliveries_cnt]
+    check_column_names: true
+    reference: |
+      SELECT courier,
+             MIN(shipped_at) AS first_shipment,
+             MAX(shipped_at) AS last_shipment,
+             COUNT(*) AS deliveries_cnt
+      FROM deliveries
+      GROUP BY courier;
+    hints:
+      - Первое и последнее значение — это минимум и максимум.
+      - "Таблица deliveries: courier, shipped_at."
+      - "1) GROUP BY courier. 2) MIN и MAX по shipped_at. 3) COUNT(*)."
+      - "SELECT courier, MIN(shipped_at) AS first_shipment, ___(shipped_at) AS last_shipment, COUNT(*) AS deliveries_cnt …"
+      - "MIN и MAX работают с датами так же, как с числами: более ранняя дата меньше."
+
+  - id: L03-09
+    type: fix_bug
+    difficulty: 2
+    customer: Каталог
+    title: Дорогие категории
+    ticket: Нужны категории (category_id), где средняя цена товара выше 20 000 ₽, и сама средняя цена (avg_price, округлить до рубля). Запрос падает. Почините.
+    tables: [products]
+    expected_columns: [category_id, avg_price]
+    check_column_names: true
+    broken_query: |
+      SELECT category_id, round(AVG(price)) AS avg_price
+      FROM products
+      WHERE AVG(price) > 20000
+      GROUP BY category_id;
+    reference: |
+      SELECT category_id, round(AVG(price)) AS avg_price
+      FROM products
+      GROUP BY category_id
+      HAVING AVG(price) > 20000;
+    hints:
+      - Подумай, на каком этапе выполнения запроса уже известно среднее.
+      - "WHERE работает до группировки, когда групп ещё нет."
+      - "1) Убери условие из WHERE. 2) Перенеси его после GROUP BY в нужное место."
+      - "GROUP BY category_id ___ AVG(price) > 20000"
+      - "Агрегатные функции в WHERE запрещены: WHERE выполняется для отдельных строк до группировки. Условия на агрегаты пишутся в HAVING."
+
+  - id: L03-10
+    type: fix_bug
+    difficulty: 2
+    customer: HR
+    title: Отделы
+    ticket: Нужны численность и средняя зарплата по отделам — department, employees, avg_salary (округлить до рубля). Запрос падает. Почините.
+    tables: [employees]
+    expected_columns: [department, employees, avg_salary]
+    check_column_names: true
+    broken_query: |
+      SELECT department, position, COUNT(*) AS employees, round(AVG(salary)) AS avg_salary
+      FROM employees
+      GROUP BY department;
+    reference: |
+      SELECT department, COUNT(*) AS employees, round(AVG(salary)) AS avg_salary
+      FROM employees
+      GROUP BY department;
+    hints:
+      - Прочитай ошибку — в ней названа колонка-нарушитель.
+      - "Каждая колонка SELECT должна быть в GROUP BY или внутри агрегата."
+      - "1) Посмотри, какой колонки нет в GROUP BY. 2) Нужна ли она в отчёте?"
+      - "SELECT department, COUNT(*) AS employees, round(AVG(salary)) AS avg_salary …"
+      - "В отделе много должностей, и СУБД не знает, какую из них показать. В отчёте position не нужна — её надо убрать из SELECT."
+
+  - id: L03-11
+    type: predict
+    difficulty: 2
+    customer: Обучение
+    title: COUNT и NULL
+    ticket: Что вернёт запрос?
+    tables: [customers]
+    query: |
+      SELECT COUNT(phone)
+      FROM customers;
+    ask: value
+    distractor_queries:
+      - SELECT COUNT(*) FROM customers;
+      - SELECT COUNT(DISTINCT city) FROM customers;
+    hints:
+      - "Чем COUNT(*) отличается от COUNT(колонка)?"
+      - "У части клиентов телефон не указан."
+      - "1) Сколько всего клиентов? 2) У скольких из них phone IS NULL?"
+      - "COUNT(phone) = всего клиентов − клиенты без телефона."
+      - "COUNT(колонка) пропускает NULL, поэтому результат меньше общего числа клиентов."
+
+  - id: L03-12
+    type: target_table
+    difficulty: 2
+    customer: Качество
+    title: Рейтинг товаров
+    ticket: Получите таблицу как на образце — товары, у которых не меньше 12 отзывов, с числом отзывов и средней оценкой (2 знака), от лучших к худшим.
+    tables: [reviews]
+    expected_columns: [product_id, reviews_cnt, avg_rating]
+    ordered: true
+    order_keys: [avg_rating]
+    reference: |
+      SELECT product_id,
+             COUNT(*) AS reviews_cnt,
+             round(AVG(rating), 2) AS avg_rating
+      FROM reviews
+      GROUP BY product_id
+      HAVING COUNT(*) >= 12
+      ORDER BY avg_rating DESC;
+    hints:
+      - Отзывы группируются по товару, и нужны только группы с достаточным числом отзывов.
+      - "Таблица reviews: product_id, rating."
+      - "1) GROUP BY product_id. 2) COUNT и round(AVG(rating), 2). 3) HAVING на количество. 4) Сортировка."
+      - "… GROUP BY product_id HAVING COUNT(*) >= ___ ORDER BY avg_rating DESC;"
+      - "HAVING отсекает товары с малым числом отзывов, у которых средняя оценка ненадёжна. Сортировка идёт по рассчитанной средней."
+
+  - id: L03-13
+    type: fill_blank
+    difficulty: 1
+    customer: CRM
+    title: Самые преданные
+    ticket: Клиенты, сделавшие больше 10 заказов, — customer_id и orders_cnt.
+    tables: [orders]
+    expected_columns: [customer_id, orders_cnt]
+    template: |
+      SELECT customer_id, COUNT(*) AS orders_cnt
+      FROM orders
+      GROUP BY ___
+      ___ COUNT(*) > 10;
+    reference: |
+      SELECT customer_id, COUNT(*) AS orders_cnt
+      FROM orders
+      GROUP BY customer_id
+      HAVING COUNT(*) > 10;
+    hints:
+      - Считаем заказы каждого клиента и фильтруем группы.
+      - "Группа — клиент, фильтр — по количеству."
+      - "1) Колонка группировки. 2) Ключевое слово фильтра групп."
+      - "GROUP BY customer_id ___ COUNT(*) > 10"
+      - "GROUP BY customer_id собирает заказы клиента в группу, HAVING оставляет группы, где заказов больше 10."
+
+  - id: L03-14
+    type: choose
+    difficulty: 2
+    customer: Обучение
+    title: Сколько покупателей
+    ticket: Какие запросы вернут число клиентов, сделавших хотя бы один заказ? Отметьте все верные.
+    tables: [orders, customers]
+    expected_columns: [count]
+    reference: |
+      SELECT COUNT(DISTINCT customer_id) FROM orders;
+    options:
+      - SELECT COUNT(DISTINCT customer_id) FROM orders;
+      - SELECT COUNT(customer_id) FROM orders;
+      - SELECT COUNT(*) FROM customers;
+      - SELECT COUNT(*) FROM (SELECT DISTINCT customer_id FROM orders) AS t;
+    hints:
+      - Один клиент может встречаться в orders много раз.
+      - "Нужно число уникальных customer_id в заказах."
+      - "1) COUNT(customer_id) считает заказы. 2) COUNT(*) FROM customers считает и тех, кто ничего не покупал."
+      - DISTINCT можно применить внутри COUNT или в подзапросе.
+      - "Верны COUNT(DISTINCT customer_id) и подсчёт строк в подзапросе с DISTINCT — это одно и то же разными словами."
+
+  - id: L03-15
+    type: write_query
+    boss: true
+    difficulty: 3
+    customer: Финансы
+    title: "Инцидент: квартальный отчёт"
+    ticket: |
+      Сломался дашборд финансов, а отчёт нужен сегодня. По кварталам 2025 года:
+      quarter — номер квартала (1–4); orders_cnt — всего заказов; delivered_revenue — сумма amount доставленных заказов; cancel_rate — доля отменённых заказов в процентах, округлить до 1 знака; avg_check — средний чек доставленных заказов, округлить до копеек.
+      Сортировка по кварталу.
+    tables: [orders]
+    expected_columns: [quarter, orders_cnt, delivered_revenue, cancel_rate, avg_check]
+    check_column_names: true
+    ordered: true
+    order_keys: [quarter]
+    required: [group_by]
+    reference: |
+      SELECT EXTRACT(QUARTER FROM created_at) AS quarter,
+             COUNT(*) AS orders_cnt,
+             SUM(amount) FILTER (WHERE status = 'delivered') AS delivered_revenue,
+             round(100.0 * COUNT(*) FILTER (WHERE status = 'cancelled') / COUNT(*), 1) AS cancel_rate,
+             round(AVG(amount) FILTER (WHERE status = 'delivered'), 2) AS avg_check
+      FROM orders
+      WHERE created_at >= '2025-01-01'
+        AND created_at < '2026-01-01'
+      GROUP BY quarter
+      ORDER BY quarter;
+    hints:
+      - Все показатели считаются в одной группировке — по кварталу. Разные статусы — через FILTER.
+      - "EXTRACT(QUARTER FROM created_at) даёт номер квартала."
+      - "1) WHERE — 2025 год (все статусы!). 2) GROUP BY квартал. 3) Пять агрегатов, три из них с FILTER. 4) Доля = 100.0 × отменённые / все."
+      - "round(100.0 * COUNT(*) FILTER (WHERE status = 'cancelled') / COUNT(*), 1) AS cancel_rate"
+      - "Фильтровать delivered в WHERE нельзя: тогда пропадут отменённые заказы и cancel_rate станет нулём. FILTER позволяет посчитать разные срезы в одной группе. 100.0 делает деление дробным."

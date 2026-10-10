@@ -1,0 +1,37 @@
+{
+  "name": "sql-quest",
+  "version": "1.0.0",
+  "description": "Игра-тренажёр по SQL: от SELECT до JOIN на PostgreSQL в браузере",
+  "scripts": {
+    "content": "node scripts/build-content.mjs",
+    "dev": "vite",
+    "build": "node scripts/build-content.mjs && vite build",
+    "preview": "vite preview",
+    "test": "vitest run"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@codemirror/autocomplete": "^6.20.3",
+    "@codemirror/commands": "^6.11.1",
+    "@codemirror/lang-sql": "^6.10.0",
+    "@codemirror/language": "^6.13.1",
+    "@codemirror/state": "^6.7.6",
+    "@codemirror/view": "^6.43.14",
+    "@electric-sql/pglite": "^0.5.8",
+    "@lezer/highlight": "^1.2.5",
+    "codemirror": "^6.0.2",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "js-yaml": "^5.4.3",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.4",
+    "vitest": "^5.0.3"
+  },
+  "type": "module",
+  "private": true
+}

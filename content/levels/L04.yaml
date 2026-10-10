@@ -1,0 +1,413 @@
+level: 4
+grade: Junior
+title: JOIN
+tag: JOIN
+book_chapter: 6
+summary: Соединяем таблицы — заказы с клиентами, товары с категориями, сотрудников с руководителями. Учимся не терять и не размножать строки.
+theory: |
+  Данные разложены по таблицам, а отчёты почти всегда требуют их соединить.
+
+  ```sql
+  SELECT o.order_id, c.first_name
+  FROM orders AS o
+  JOIN customers AS c ON c.customer_id = o.customer_id;
+  ```
+
+  `o` и `c` — псевдонимы таблиц. Если колонка с одинаковым именем есть в обеих таблицах, её нужно уточнить: `o.customer_id`.
+
+  **Виды соединений:**
+
+  - `JOIN` (`INNER JOIN`) — только пары, нашедшие друг друга;
+  - `LEFT JOIN` — все строки левой таблицы; если пары нет, колонки правой заполняются NULL;
+  - `RIGHT JOIN` — то же для правой, `FULL JOIN` — для обеих;
+  - `CROSS JOIN` — все со всеми: 5 строк × 30 строк = 150.
+
+  **Anti-join** — «строки без пары»: `LEFT JOIN … WHERE правая.id IS NULL`.
+
+  **Условие в ON и в WHERE — не одно и то же.** Для `LEFT JOIN` условие в `ON` ограничивает, какие строки справа присоединяются, а условие в `WHERE` выкидывает строки уже после соединения — и превращает LEFT JOIN в обычный.
+
+  **Размножение строк.** Если у клиента 3 заказа и 2 отзыва, соединение с обеими таблицами даст 3 × 2 = 6 строк. Считайте через `COUNT(DISTINCT …)` или агрегируйте таблицы до соединения.
+
+  **COUNT после LEFT JOIN.** `COUNT(*)` посчитает и строку-заглушку с NULL — у товара без отзывов получится 1. Считайте колонку правой таблицы: `COUNT(r.review_id)`.
+
+  **Self-join** — соединение таблицы с самой собой, например сотрудника с руководителем: `employees e JOIN employees m ON m.employee_id = e.manager_id`.
+tasks:
+  - id: L04-01
+    type: write_query
+    difficulty: 1
+    customer: Поддержка
+    title: Заказы 1 июня
+    ticket: Поддержке нужны заказы за 1 июня 2026 года с именем клиента — order_id, first_name, last_name, amount.
+    tables: [orders, customers]
+    expected_columns: [order_id, first_name, last_name, amount]
+    required: [join]
+    reference: |
+      SELECT o.order_id, c.first_name, c.last_name, o.amount
+      FROM orders AS o
+      JOIN customers AS c ON c.customer_id = o.customer_id
+      WHERE o.created_at::date = '2026-06-01';
+    hints:
+      - Имя клиента лежит в другой таблице — её нужно присоединить.
+      - "orders и customers связаны по customer_id."
+      - "1) FROM orders. 2) JOIN customers ON совпадение customer_id. 3) Фильтр по дате."
+      - "FROM orders AS o JOIN customers AS c ON c.customer_id = ___.customer_id WHERE o.created_at::date = '2026-06-01'"
+      - "JOIN … ON склеивает каждую строку заказа со строкой клиента, у которого тот же customer_id. Псевдонимы o и c делают запрос короче."
+
+  - id: L04-02
+    type: write_query
+    difficulty: 1
+    customer: Каталог
+    title: Товары Lumen по категориям
+    ticket: Товары бренда Lumen с названием категории — колонки product и category.
+    tables: [products, categories]
+    expected_columns: [product, category]
+    check_column_names: true
+    required: [join]
+    reference: |
+      SELECT p.name AS product, c.name AS category
+      FROM products AS p
+      JOIN categories AS c ON c.category_id = p.category_id
+      WHERE p.brand = 'Lumen';
+    hints:
+      - В обеих таблицах есть колонка name — придётся уточнять, чья она.
+      - "products.category_id ссылается на categories.category_id."
+      - "1) Соедини товары с категориями. 2) Отфильтруй бренд. 3) Переименуй обе колонки name."
+      - "SELECT p.name AS product, c.name AS ___ FROM products AS p JOIN categories AS c ON …"
+      - "Одноимённые колонки разных таблиц различаются по префиксу псевдонима: p.name и c.name."
+
+  - id: L04-03
+    type: write_query
+    difficulty: 2
+    customer: Поддержка
+    title: Состав заказа
+    ticket: Клиент спрашивает, что было в заказе № 1402. Нужны name товара, quantity, price и line_total (количество × цена).
+    tables: [order_items, products]
+    expected_columns: [name, quantity, price, line_total]
+    check_column_names: true
+    reference: |
+      SELECT p.name, oi.quantity, oi.price, oi.quantity * oi.price AS line_total
+      FROM order_items AS oi
+      JOIN products AS p ON p.product_id = oi.product_id
+      WHERE oi.order_id = 1402;
+    hints:
+      - Позиции заказа лежат в order_items, а названия — в products.
+      - "Цену бери из order_items: она зафиксирована на момент покупки."
+      - "1) FROM order_items. 2) JOIN products по product_id. 3) Фильтр order_id = 1402. 4) Вычисли line_total."
+      - "SELECT p.name, oi.quantity, oi.price, oi.quantity * oi.price AS line_total FROM order_items AS oi JOIN products AS p ON … WHERE oi.order_id = ___;"
+      - "oi.price — цена в момент заказа, p.price — текущая цена в каталоге. Для истории заказа важна первая."
+
+  - id: L04-04
+    type: write_query
+    difficulty: 2
+    customer: Маркетинг
+    title: Зарегистрировались и пропали
+    ticket: Нужен список клиентов, которые зарегистрировались в 2025 году, но не сделали ни одного заказа, — customer_id, email, registered_at, по дате регистрации.
+    tables: [customers, orders]
+    expected_columns: [customer_id, email, registered_at]
+    ordered: true
+    required: [join]
+    bonus:
+      text: Решить через LEFT JOIN, без подзапроса
+      forbidden: [subquery]
+    reference: |
+      SELECT c.customer_id, c.email, c.registered_at
+      FROM customers AS c
+      LEFT JOIN orders AS o ON o.customer_id = c.customer_id
+      WHERE o.order_id IS NULL
+        AND c.registered_at >= '2025-01-01'
+        AND c.registered_at < '2026-01-01'
+      ORDER BY c.registered_at;
+    common_mistakes:
+      - pattern: "=\\s*NULL"
+        explain: "= NULL всегда даёт NULL — для поиска строк без пары нужен IS NULL."
+    hints:
+      - Нужны клиенты, у которых нет пары в orders.
+      - "LEFT JOIN сохраняет клиента, даже если заказов нет, — колонки orders будут NULL."
+      - "1) customers LEFT JOIN orders. 2) Оставь строки, где заказ не нашёлся. 3) Фильтр 2025 года. 4) Сортировка."
+      - "FROM customers AS c LEFT JOIN orders AS o ON o.customer_id = c.customer_id WHERE o.order_id IS ___ AND …"
+      - "Это anti-join: LEFT JOIN дополняет клиентов без заказов NULL-ами, а WHERE o.order_id IS NULL оставляет только их."
+
+  - id: L04-05
+    type: write_query
+    difficulty: 2
+    customer: Каталог
+    title: Мёртвый сток
+    ticket: Какие товары ни разу не продавались? product_id и name.
+    tables: [products, order_items]
+    expected_columns: [product_id, name]
+    required: [join]
+    reference: |
+      SELECT p.product_id, p.name
+      FROM products AS p
+      LEFT JOIN order_items AS oi ON oi.product_id = p.product_id
+      WHERE oi.product_id IS NULL;
+    hints:
+      - Та же техника, что и с клиентами без заказов.
+      - "products LEFT JOIN order_items по product_id."
+      - "1) Присоедини продажи к товарам слева. 2) Оставь товары, для которых продажа не нашлась."
+      - "… LEFT JOIN order_items AS oi ON oi.product_id = p.product_id WHERE oi.___ IS NULL;"
+      - "У проданного товара есть хотя бы одна строка в order_items. У непроданного после LEFT JOIN колонки oi будут NULL."
+
+  - id: L04-06
+    type: write_query
+    difficulty: 2
+    customer: Финансы
+    title: Выручка по категориям
+    ticket: Выручка по категориям — category (название) и revenue (сумма quantity × price позиций доставленных заказов), по убыванию выручки.
+    tables: [order_items, orders, products, categories]
+    expected_columns: [category, revenue]
+    check_column_names: true
+    ordered: true
+    order_keys: [revenue]
+    required: [join, group_by]
+    reference: |
+      SELECT c.name AS category, SUM(oi.quantity * oi.price) AS revenue
+      FROM order_items AS oi
+      JOIN orders AS o ON o.order_id = oi.order_id
+      JOIN products AS p ON p.product_id = oi.product_id
+      JOIN categories AS c ON c.category_id = p.category_id
+      WHERE o.status = 'delivered'
+      GROUP BY c.name
+      ORDER BY revenue DESC;
+    hints:
+      - Цепочка из четырёх таблиц — позиция → заказ (статус) и позиция → товар → категория.
+      - "order_items связан с orders по order_id и с products по product_id; products — с categories по category_id."
+      - "1) Соедини четыре таблицы. 2) Только delivered. 3) GROUP BY название категории. 4) SUM(quantity * price)."
+      - "SELECT c.name AS category, SUM(oi.quantity * oi.price) AS revenue FROM order_items oi JOIN orders o ON … JOIN products p ON … JOIN categories c ON … WHERE o.status = 'delivered' GROUP BY c.name ORDER BY revenue DESC;"
+      - "JOIN-ы можно выстраивать цепочкой. Агрегат считается после соединения, поэтому статус заказа доступен в WHERE."
+
+  - id: L04-07
+    type: write_query
+    difficulty: 2
+    customer: HR
+    title: Кто кому подчиняется
+    ticket: Для отдела «Аналитика» покажите каждого сотрудника и его руководителя — колонки employee и manager.
+    tables: [employees]
+    expected_columns: [employee, manager]
+    check_column_names: true
+    required: [join]
+    reference: |
+      SELECT e.full_name AS employee, m.full_name AS manager
+      FROM employees AS e
+      JOIN employees AS m ON m.employee_id = e.manager_id
+      WHERE e.department = 'Аналитика';
+    hints:
+      - Руководитель — тоже сотрудник из той же таблицы.
+      - "manager_id сотрудника ссылается на employee_id руководителя."
+      - "1) Возьми employees дважды под разными псевдонимами. 2) Соедини по manager_id. 3) Отфильтруй отдел сотрудника."
+      - "FROM employees AS e JOIN employees AS m ON m.employee_id = e.___"
+      - "Self-join: одна таблица в двух ролях. e — подчинённый, m — руководитель."
+
+  - id: L04-08
+    type: write_query
+    difficulty: 2
+    customer: Каталог
+    title: Подкатегории
+    ticket: Покажите подкатегории вместе с родительской категорией — category и parent. Корневые категории (без родителя) не нужны.
+    tables: [categories]
+    expected_columns: [category, parent]
+    check_column_names: true
+    required: [join]
+    reference: |
+      SELECT c.name AS category, p.name AS parent
+      FROM categories AS c
+      JOIN categories AS p ON p.category_id = c.parent_id;
+    hints:
+      - Родитель лежит в той же таблице.
+      - "parent_id ссылается на category_id другой строки categories."
+      - "1) categories дважды. 2) Соедини по parent_id. 3) INNER JOIN сам отбросит корни."
+      - "FROM categories AS c JOIN categories AS p ON p.category_id = c.___"
+      - "У корневых категорий parent_id = NULL, пары для них нет, поэтому INNER JOIN их исключает — дополнительный фильтр не нужен."
+
+  - id: L04-09
+    type: write_query
+    difficulty: 2
+    customer: Качество
+    title: Отзывы на Aroma
+    ticket: Сколько отзывов у каждого товара бренда Aroma, включая товары без отзывов? Колонки name и reviews_cnt.
+    tables: [products, reviews]
+    expected_columns: [name, reviews_cnt]
+    check_column_names: true
+    required: [join]
+    reference: |
+      SELECT p.name, COUNT(r.review_id) AS reviews_cnt
+      FROM products AS p
+      LEFT JOIN reviews AS r ON r.product_id = p.product_id
+      WHERE p.brand = 'Aroma'
+      GROUP BY p.product_id, p.name;
+    common_mistakes:
+      - pattern: "count\\s*\\(\\s*\\*\\s*\\)"
+        result: values_bigger
+        explain: "COUNT(*) после LEFT JOIN считает и строку-заглушку: у товара без отзывов получится 1. Считай колонку правой таблицы — COUNT(r.review_id)."
+    hints:
+      - «Включая товары без отзывов» — значит LEFT JOIN, и у таких товаров должен получиться 0.
+      - "products LEFT JOIN reviews по product_id, затем группировка по товару."
+      - "1) LEFT JOIN. 2) Фильтр бренда. 3) GROUP BY товар. 4) Считай не строки, а отзывы."
+      - "SELECT p.name, COUNT(r.___) AS reviews_cnt … GROUP BY p.product_id, p.name;"
+      - "COUNT(*) посчитал бы строку-заглушку с NULL как отзыв. COUNT(r.review_id) пропускает NULL и даёт честный 0. Группировка по product_id нужна на случай одинаковых названий."
+
+  - id: L04-10
+    type: fix_bug
+    difficulty: 3
+    customer: CRM
+    title: Раздутая активность
+    ticket: |
+      Отчёт по клиентам из Перми показывает подозрительно большие цифры — у некоторых клиентов десятки заказов и отзывов. Нужно: customer_id, orders_cnt, reviews_cnt (0, если нет). Почините.
+    tables: [customers, orders, reviews]
+    expected_columns: [customer_id, orders_cnt, reviews_cnt]
+    check_column_names: true
+    broken_query: |
+      SELECT c.customer_id,
+             COUNT(o.order_id) AS orders_cnt,
+             COUNT(r.review_id) AS reviews_cnt
+      FROM customers AS c
+      LEFT JOIN orders AS o ON o.customer_id = c.customer_id
+      LEFT JOIN reviews AS r ON r.customer_id = c.customer_id
+      WHERE c.city = 'Пермь'
+      GROUP BY c.customer_id;
+    reference: |
+      SELECT c.customer_id,
+             COUNT(DISTINCT o.order_id) AS orders_cnt,
+             COUNT(DISTINCT r.review_id) AS reviews_cnt
+      FROM customers AS c
+      LEFT JOIN orders AS o ON o.customer_id = c.customer_id
+      LEFT JOIN reviews AS r ON r.customer_id = c.customer_id
+      WHERE c.city = 'Пермь'
+      GROUP BY c.customer_id;
+    hints:
+      - Два LEFT JOIN к разным «многим» таблицам перемножают строки.
+      - "Клиент с 4 заказами и 3 отзывами даёт 4 × 3 = 12 строк до группировки."
+      - "1) Пойми, что каждый заказ повторяется столько раз, сколько у клиента отзывов. 2) Посчитай уникальные идентификаторы."
+      - "COUNT(___ o.order_id), COUNT(___ r.review_id)"
+      - "Соединение с двумя независимыми таблицами даёт декартово произведение их строк для каждого клиента. COUNT(DISTINCT id) снимает повторы. Другой способ — посчитать заказы и отзывы в подзапросах и соединить готовые числа."
+
+  - id: L04-11
+    type: fix_bug
+    difficulty: 1
+    customer: Поддержка
+    title: Неоднозначная колонка
+    ticket: Нужны заказы клиентов из Уфы за май 2026 года — order_id, customer_id, email. Запрос падает с ошибкой. Почините.
+    tables: [orders, customers]
+    expected_columns: [order_id, customer_id, email]
+    broken_query: |
+      SELECT order_id, customer_id, email
+      FROM orders
+      JOIN customers ON orders.customer_id = customers.customer_id
+      WHERE city = 'Уфа'
+        AND created_at >= '2026-05-01'
+        AND created_at < '2026-06-01';
+    reference: |
+      SELECT o.order_id, o.customer_id, c.email
+      FROM orders AS o
+      JOIN customers AS c ON o.customer_id = c.customer_id
+      WHERE c.city = 'Уфа'
+        AND o.created_at >= '2026-05-01'
+        AND o.created_at < '2026-06-01';
+    hints:
+      - СУБД не понимает, из какой таблицы брать одну из колонок.
+      - "customer_id есть и в orders, и в customers."
+      - "1) Найди колонку, которая есть в обеих таблицах. 2) Уточни её префиксом таблицы."
+      - "SELECT order_id, ___.customer_id, email …"
+      - "Ошибка «column reference is ambiguous» значит, что имя есть в нескольких таблицах. Префикс (orders.customer_id или o.customer_id) снимает неоднозначность. Хорошая привычка — уточнять все колонки в запросах с JOIN."
+
+  - id: L04-12
+    type: predict
+    difficulty: 1
+    customer: Обучение
+    title: Все со всеми
+    ticket: Сколько строк вернёт запрос? В warehouses 5 строк, в promo_codes — 30.
+    tables: [warehouses, promo_codes]
+    query: |
+      SELECT *
+      FROM warehouses
+      CROSS JOIN promo_codes;
+    ask: rows
+    distractor_values: [35, 30, 5]
+    hints:
+      - CROSS JOIN соединяет каждую строку с каждой.
+      - "Сколько пар можно составить из 5 и 30 элементов?"
+      - "1) Каждый склад получает в пару все промокоды. 2) Умножь."
+      - "5 × 30 = ___"
+      - "CROSS JOIN — декартово произведение: 5 × 30 = 150 строк. Случайно получить такое легко, если забыть условие соединения."
+
+  - id: L04-13
+    type: choose
+    difficulty: 3
+    customer: Обучение
+    title: Нули не должны пропасть
+    ticket: |
+      Нужны все клиенты из Уфы и количество их заказов в 2026 году; у клиентов без заказов должен быть 0. Какие запросы верны? Отметьте все.
+    tables: [customers, orders]
+    expected_columns: [customer_id, orders_2026]
+    reference: |
+      SELECT c.customer_id, COUNT(o.order_id) AS orders_2026 FROM customers c LEFT JOIN orders o ON o.customer_id = c.customer_id AND o.created_at >= '2026-01-01' WHERE c.city = 'Уфа' GROUP BY c.customer_id;
+    options:
+      - SELECT c.customer_id, COUNT(o.order_id) AS orders_2026 FROM customers c LEFT JOIN orders o ON o.customer_id = c.customer_id AND o.created_at >= '2026-01-01' WHERE c.city = 'Уфа' GROUP BY c.customer_id;
+      - SELECT c.customer_id, COUNT(o.order_id) AS orders_2026 FROM customers c LEFT JOIN orders o ON o.customer_id = c.customer_id WHERE c.city = 'Уфа' AND o.created_at >= '2026-01-01' GROUP BY c.customer_id;
+      - SELECT c.customer_id, COUNT(*) AS orders_2026 FROM customers c LEFT JOIN orders o ON o.customer_id = c.customer_id AND o.created_at >= '2026-01-01' WHERE c.city = 'Уфа' GROUP BY c.customer_id;
+      - SELECT c.customer_id, COUNT(o.order_id) FILTER (WHERE o.created_at >= '2026-01-01') AS orders_2026 FROM customers c LEFT JOIN orders o ON o.customer_id = c.customer_id WHERE c.city = 'Уфа' GROUP BY c.customer_id;
+    hints:
+      - Проверь каждый вариант на клиенте, у которого нет заказов в 2026 году.
+      - "Условие на правую таблицу в WHERE отбрасывает строки-заглушки с NULL."
+      - "1) Где стоит фильтр по дате — в ON или в WHERE? 2) Что считает COUNT(*) для заглушки?"
+      - Фильтр можно перенести в ON или в FILTER — тогда заглушка выживет.
+      - "Верны варианты с условием на дату в ON и с FILTER: оба сохраняют клиентов без заказов. Фильтр в WHERE превращает LEFT JOIN в INNER и теряет нули, а COUNT(*) считает строку-заглушку как 1."
+
+  - id: L04-14
+    type: target_table
+    difficulty: 2
+    customer: Логистика
+    title: Остатки по складам
+    ticket: Получите таблицу как на образце — склады с городом и суммарным остатком товаров, от больших остатков к меньшим.
+    tables: [warehouses, stock]
+    expected_columns: [name, city, total_qty]
+    ordered: true
+    order_keys: [total_qty]
+    reference: |
+      SELECT w.name, w.city, SUM(s.qty) AS total_qty
+      FROM warehouses AS w
+      JOIN stock AS s ON s.warehouse_id = w.warehouse_id
+      GROUP BY w.warehouse_id, w.name, w.city
+      ORDER BY total_qty DESC;
+    hints:
+      - Остатки лежат в stock, а названия складов — в warehouses.
+      - "Соединяй по warehouse_id, группируй по складу."
+      - "1) JOIN. 2) GROUP BY склад. 3) SUM(qty). 4) Сортировка по убыванию."
+      - "SELECT w.name, w.city, SUM(s.qty) AS total_qty FROM warehouses w JOIN stock s ON … GROUP BY w.warehouse_id, w.name, w.city ORDER BY ___ DESC;"
+      - "Каждая колонка SELECT вне агрегата должна быть в GROUP BY. Группировка по warehouse_id гарантирует, что одноимённые склады не склеятся."
+
+  - id: L04-15
+    type: write_query
+    boss: true
+    difficulty: 3
+    customer: Руководство
+    title: "Инцидент: что мы продаём"
+    ticket: |
+      Совет директоров спрашивает, какие направления бизнеса работают, а какие — нет. По каждой корневой категории (у которой нет родителя):
+      root_category — название; products_total — товаров в ней (включая все подкатегории любой глубины); never_sold — сколько из них ни разу не продавались; revenue — сумма quantity × price по позициям доставленных заказов (0, если продаж нет).
+      Сортировка по revenue по убыванию. Учтите, что «Игровые смартфоны» вложены в «Смартфоны», а те — в «Электронику».
+    tables: [categories, products, order_items, orders]
+    expected_columns: [root_category, products_total, never_sold, revenue]
+    check_column_names: true
+    ordered: true
+    order_keys: [revenue]
+    required: [join, group_by]
+    reference: |
+      SELECT COALESCE(gp.name, pc.name, c.name) AS root_category,
+             COUNT(DISTINCT p.product_id) AS products_total,
+             COUNT(DISTINCT p.product_id) FILTER (WHERE oi.product_id IS NULL) AS never_sold,
+             COALESCE(SUM(oi.quantity * oi.price) FILTER (WHERE o.status = 'delivered'), 0) AS revenue
+      FROM products AS p
+      JOIN categories AS c ON c.category_id = p.category_id
+      LEFT JOIN categories AS pc ON pc.category_id = c.parent_id
+      LEFT JOIN categories AS gp ON gp.category_id = pc.parent_id
+      LEFT JOIN order_items AS oi ON oi.product_id = p.product_id
+      LEFT JOIN orders AS o ON o.order_id = oi.order_id
+      GROUP BY root_category
+      ORDER BY revenue DESC;
+    hints:
+      - "Корень находится максимум через два шага по parent_id: категория → родитель → прародитель."
+      - "Присоедини categories к себе дважды через LEFT JOIN; корнем будет последний непустой уровень — COALESCE(прародитель, родитель, сама категория)."
+      - "1) products → categories → родитель → прародитель (LEFT). 2) LEFT JOIN продаж и заказов. 3) Группировка по корню. 4) COUNT(DISTINCT), FILTER и COALESCE."
+      - "COALESCE(gp.name, pc.name, c.name) AS root_category, COUNT(DISTINCT p.product_id), COUNT(DISTINCT p.product_id) FILTER (WHERE oi.product_id IS NULL), COALESCE(SUM(oi.quantity * oi.price) FILTER (WHERE o.status = 'delivered'), 0)"
+      - "Self-join дважды поднимает категорию до корня. LEFT JOIN к продажам сохраняет непроданные товары, поэтому товары считаются через COUNT(DISTINCT), а непроданные — по признаку oi.product_id IS NULL. SUM без подходящих строк даёт NULL — COALESCE превращает его в 0."

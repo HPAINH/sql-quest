@@ -1,0 +1,339 @@
+level: 1
+grade: Стажёр
+title: Фильтрация
+tag: WHERE
+book_chapter: 3
+summary: Оставляем только нужные строки — сравнения, логика, списки, диапазоны, шаблоны и NULL.
+theory: |
+  `WHERE` оставляет строки, для которых условие истинно:
+
+  ```sql
+  SELECT name, price
+  FROM products
+  WHERE price < 1000;
+  ```
+
+  **Сравнения:** `=`, `<>` (или `!=`), `<`, `<=`, `>`, `>=`. Строки и даты пишутся в **одинарных** кавычках: `city = 'Казань'`, `created_at >= '2026-06-01'`. Двойные кавычки означают имя колонки, а не текст.
+
+  **Логика:** `AND`, `OR`, `NOT`. `AND` выполняется раньше `OR`, поэтому смешивая их, ставьте скобки: `status = 'cancelled' AND (city = 'Москва' OR city = 'Казань')`.
+
+  **Списки и диапазоны:** `status IN ('cancelled', 'returned')`, `price BETWEEN 2000 AND 3000` — границы включаются.
+
+  **Шаблоны:** `LIKE 'Смарт%'` — `%` означает любые символы, `_` — ровно один. `LIKE` различает регистр, `ILIKE` — нет.
+
+  **NULL** — это «значение неизвестно». Любое сравнение с NULL даёт не «истину» и не «ложь», а NULL, и строка отбрасывается. Поэтому `phone = NULL` не найдёт ничего — проверяйте `phone IS NULL` или `IS NOT NULL`.
+
+  Для дат за период удобнее полуоткрытый интервал: `created_at >= '2026-06-01' AND created_at < '2026-07-01'` — так не потеряется последний день месяца с его часами и минутами.
+tasks:
+  - id: L01-01
+    type: write_query
+    difficulty: 1
+    customer: CRM
+    title: Клиенты из Казани
+    ticket: Для локальной акции нужны клиенты из Казани — customer_id, first_name, last_name.
+    tables: [customers]
+    expected_columns: [customer_id, first_name, last_name]
+    required: [where]
+    reference: |
+      SELECT customer_id, first_name, last_name
+      FROM customers
+      WHERE city = 'Казань';
+    hints:
+      - Нужны не все клиенты, а только часть — фильтр по городу.
+      - "Таблица customers, город хранится в колонке city."
+      - "1) Выбери три колонки. 2) Добавь условие на город."
+      - "… WHERE city = '___';"
+      - "WHERE city = 'Казань' оставляет только строки с этим городом. Текст записывается в одинарных кавычках."
+
+  - id: L01-02
+    type: write_query
+    difficulty: 1
+    customer: Маркетинг
+    title: До тысячи рублей
+    ticket: Подборка «Подарки до 1000 ₽» — товары дешевле 1000, колонки name и price, от дешёвых к дорогим.
+    tables: [products]
+    expected_columns: [name, price]
+    ordered: true
+    order_keys: [price]
+    reference: |
+      SELECT name, price
+      FROM products
+      WHERE price < 1000
+      ORDER BY price;
+    hints:
+      - "Фильтр по цене плюс сортировка: WHERE идёт перед ORDER BY."
+      - "Таблица products, колонка price."
+      - "1) Оставь товары с ценой меньше 1000. 2) Отсортируй по возрастанию цены."
+      - "SELECT name, price FROM products WHERE price ___ 1000 ORDER BY price;"
+      - "WHERE price < 1000 отбирает строки, ORDER BY price сортирует уже отобранные. «Дешевле 1000» — строго меньше, поэтому <, а не <=."
+
+  - id: L01-03
+    type: write_query
+    difficulty: 1
+    customer: Маркетинг
+    title: Активная Nova
+    ticket: Нужны активные товары бренда Nova дороже 5000 ₽ — name и price.
+    tables: [products]
+    expected_columns: [name, price]
+    reference: |
+      SELECT name, price
+      FROM products
+      WHERE brand = 'Nova'
+        AND is_active
+        AND price > 5000;
+    hints:
+      - Здесь три условия, и все должны выполняться одновременно.
+      - "Таблица products: brand, is_active (логическая колонка), price."
+      - "1) Условие на бренд. 2) Условие на активность. 3) Условие на цену. Соедини их через AND."
+      - "WHERE brand = 'Nova' AND is_active = ___ AND price > 5000"
+      - "AND требует, чтобы были истинны все условия. Логическую колонку можно проверять просто как is_active или is_active = true."
+
+  - id: L01-04
+    type: write_query
+    difficulty: 2
+    customer: Финансы
+    title: Отмены и возвраты июня
+    ticket: Сколько денег мы теряем? Начнём со списка заказов июня 2026 года в статусах cancelled и returned — order_id, status, amount.
+    tables: [orders]
+    expected_columns: [order_id, status, amount]
+    required: [in]
+    reference: |
+      SELECT order_id, status, amount
+      FROM orders
+      WHERE status IN ('cancelled', 'returned')
+        AND created_at >= '2026-06-01'
+        AND created_at < '2026-07-01';
+    hints:
+      - Два условия — на статус (из списка) и на период.
+      - "Таблица orders: status, created_at. Для списка значений есть IN."
+      - "1) Статус в списке из двух значений. 2) Дата заказа не раньше 1 июня. 3) И раньше 1 июля."
+      - "WHERE status IN (___, ___) AND created_at >= '2026-06-01' AND created_at < '___'"
+      - "IN заменяет цепочку OR. Полуоткрытый интервал [1 июня; 1 июля) захватывает весь июнь, включая 30-е число с любым временем."
+
+  - id: L01-05
+    type: write_query
+    difficulty: 1
+    customer: Каталог
+    title: Средний сегмент
+    ticket: Товары с ценой от 2000 до 3000 ₽ включительно — name и price.
+    tables: [products]
+    expected_columns: [name, price]
+    bonus:
+      text: Использовать BETWEEN
+      required: [between]
+    reference: |
+      SELECT name, price
+      FROM products
+      WHERE price BETWEEN 2000 AND 3000;
+    hints:
+      - Диапазон с включёнными границами — для этого есть отдельный оператор.
+      - "Таблица products, колонка price."
+      - "1) Нижняя граница 2000. 2) Верхняя 3000. 3) Обе включаются."
+      - "WHERE price BETWEEN ___ AND ___"
+      - "BETWEEN a AND b равносилен price >= a AND price <= b — обе границы включены."
+
+  - id: L01-06
+    type: write_query
+    difficulty: 2
+    customer: Каталог
+    title: Все наушники
+    ticket: Найдите все товары, в названии которых встречается слово «наушники» в любом регистре — product_id и name.
+    tables: [products]
+    expected_columns: [product_id, name]
+    reference: |
+      SELECT product_id, name
+      FROM products
+      WHERE name ILIKE '%наушники%';
+    common_mistakes:
+      - result: rows_less
+        explain: "Строк меньше, чем нужно. В каталоге есть «Наушники …» и «TWS-наушники …» — LIKE различает регистр, а ILIKE нет."
+    hints:
+      - "Слово может стоять в начале или в середине названия и начинаться с большой или маленькой буквы."
+      - "Таблица products, колонка name, поиск по шаблону."
+      - "1) Шаблон с % с обеих сторон. 2) Оператор, который не различает регистр."
+      - "WHERE name ___ '%наушники%'"
+      - "% означает любые символы, поэтому '%наушники%' ищет слово в любом месте. ILIKE игнорирует регистр — найдутся и «Наушники», и «TWS-наушники»."
+
+  - id: L01-07
+    type: write_query
+    difficulty: 1
+    customer: CRM
+    title: Без телефона
+    ticket: Колл-центру нужно знать, кому из москвичей мы не сможем позвонить — клиенты из Москвы без телефона, customer_id и email.
+    tables: [customers]
+    expected_columns: [customer_id, email]
+    reference: |
+      SELECT customer_id, email
+      FROM customers
+      WHERE city = 'Москва'
+        AND phone IS NULL;
+    hints:
+      - Отсутствие значения — это NULL, а с ним обычное равенство не работает.
+      - "Таблица customers: city и phone."
+      - "1) Условие на город. 2) Проверка, что телефона нет."
+      - "WHERE city = 'Москва' AND phone IS ___"
+      - "phone = NULL всегда даёт NULL, и строка отбрасывается. Правильная проверка — IS NULL."
+
+  - id: L01-08
+    type: fix_bug
+    difficulty: 1
+    customer: Логистика
+    title: Заказы без адреса
+    ticket: Логисты просили заказы без адреса доставки, а запрос возвращает пустую таблицу. Почините.
+    tables: [orders]
+    expected_columns: [order_id, delivery_city]
+    broken_query: |
+      SELECT order_id, delivery_city
+      FROM orders
+      WHERE delivery_address = NULL;
+    reference: |
+      SELECT order_id, delivery_city
+      FROM orders
+      WHERE delivery_address IS NULL;
+    hints:
+      - Пустой результат — значит, условие не выполняется ни для одной строки.
+      - "Посмотри, как условие сравнивает delivery_address с NULL."
+      - "1) Вспомни, чему равно любое сравнение с NULL. 2) Замени сравнение на специальную проверку."
+      - "WHERE delivery_address ___ NULL"
+      - "Сравнение «= NULL» даёт NULL для любой строки, поэтому ничего не находится. IS NULL — единственный способ проверить отсутствие значения."
+
+  - id: L01-09
+    type: fix_bug
+    difficulty: 2
+    customer: Финансы
+    title: Лишние питерские заказы
+    ticket: Нужны отменённые заказы из Москвы или Санкт-Петербурга, но в отчёт попали и неотменённые питерские. Почините запрос.
+    tables: [orders]
+    expected_columns: [order_id, status, delivery_city]
+    broken_query: |
+      SELECT order_id, status, delivery_city
+      FROM orders
+      WHERE status = 'cancelled' AND delivery_city = 'Москва'
+         OR delivery_city = 'Санкт-Петербург';
+    reference: |
+      SELECT order_id, status, delivery_city
+      FROM orders
+      WHERE status = 'cancelled'
+        AND (delivery_city = 'Москва' OR delivery_city = 'Санкт-Петербург');
+    hints:
+      - Дело в приоритете логических операторов.
+      - "Что выполняется раньше — AND или OR?"
+      - "1) Раздели условие на «статус» и «город». 2) Сгруппируй два города скобками."
+      - "WHERE status = 'cancelled' AND (___ OR ___)"
+      - "AND связывает сильнее OR, поэтому исходное условие читалось как «(отменён и Москва) или Петербург». Скобки фиксируют нужный смысл. Ещё короче — delivery_city IN ('Москва', 'Санкт-Петербург')."
+
+  - id: L01-10
+    type: predict
+    difficulty: 2
+    customer: Обучение
+    title: Ловушка NULL
+    ticket: |
+      Условие ниже выглядит так, будто покрывает всех клиентов. Сколько строк вернёт запрос?
+    tables: [customers]
+    query: |
+      SELECT *
+      FROM customers
+      WHERE birth_date > '2000-01-01'
+         OR birth_date <= '2000-01-01';
+    ask: rows
+    distractor_queries:
+      - SELECT * FROM customers;
+      - SELECT * FROM customers WHERE birth_date IS NULL;
+    hints:
+      - "Подумай о клиентах, у которых дата рождения не указана."
+      - "Сравнение с NULL даёт NULL — ни true, ни false."
+      - "1) Посчитай всех клиентов. 2) Вычти тех, у кого birth_date IS NULL."
+      - "Ответ = все клиенты − клиенты с пустой birth_date."
+      - "Для строк с NULL обе половины условия дают NULL, и NULL OR NULL — тоже NULL. Такие клиенты не проходят фильтр, хотя условие кажется всеохватывающим."
+
+  - id: L01-11
+    type: target_table
+    difficulty: 2
+    customer: Качество
+    title: Гневные отзывы
+    ticket: Получите таблицу как на образце — отзывы с оценкой 1, у которых есть текст, оставленные в мае 2026 года.
+    tables: [reviews]
+    expected_columns: [review_id, rating, text, created_at]
+    reference: |
+      SELECT review_id, rating, text, created_at
+      FROM reviews
+      WHERE rating = 1
+        AND text IS NOT NULL
+        AND created_at >= '2026-05-01'
+        AND created_at < '2026-06-01';
+    hints:
+      - Три условия — на оценку, на наличие текста и на период.
+      - "Таблица reviews: rating, text, created_at."
+      - "1) rating = 1. 2) Текст не пустой. 3) Май 2026 года полуоткрытым интервалом."
+      - "WHERE rating = 1 AND text IS NOT NULL AND created_at >= '2026-05-01' AND created_at < '___'"
+      - "IS NOT NULL отсекает отзывы без текста. Интервал [1 мая; 1 июня) охватывает весь май, включая последний день."
+
+  - id: L01-12
+    type: fill_blank
+    difficulty: 1
+    customer: HR
+    title: Кроме продаж и поддержки
+    ticket: Список сотрудников всех отделов, кроме «Продажи» и «Поддержка» — full_name и department.
+    tables: [employees]
+    expected_columns: [full_name, department]
+    template: |
+      SELECT full_name, department
+      FROM employees
+      WHERE department ___ ___ ('Продажи', 'Поддержка');
+    reference: |
+      SELECT full_name, department
+      FROM employees
+      WHERE department NOT IN ('Продажи', 'Поддержка');
+    hints:
+      - Нужно исключить значения из списка.
+      - "IN проверяет вхождение в список, а его можно отрицать."
+      - "1) Оператор списка. 2) Отрицание перед ним."
+      - "WHERE department ___ IN (…)"
+      - "NOT IN оставляет строки, значение которых не совпадает ни с одним элементом списка."
+
+  - id: L01-13
+    type: choose
+    difficulty: 2
+    customer: Обучение
+    title: Клиенты на Gmail
+    ticket: Какие запросы найдут всех клиентов с почтой на gmail.com — с учётом того, что часть адресов записана с заглавными буквами? Отметьте все верные.
+    tables: [customers]
+    expected_columns: [customer_id, email]
+    reference: |
+      SELECT customer_id, email FROM customers WHERE email ILIKE '%@gmail.com';
+    options:
+      - SELECT customer_id, email FROM customers WHERE email ILIKE '%@gmail.com';
+      - SELECT customer_id, email FROM customers WHERE email LIKE '%@gmail.com';
+      - SELECT customer_id, email FROM customers WHERE email = '%@gmail.com';
+      - SELECT customer_id, email FROM customers WHERE lower(email) LIKE '%@gmail.com';
+    hints:
+      - Важны два момента — шаблон и регистр букв.
+      - "= не понимает шаблоны: % для него обычный символ."
+      - "1) Отбрось вариант с =. 2) Проверь, какой вариант чувствителен к регистру."
+      - "ILIKE и lower(…) LIKE — два способа сравнивать без учёта регистра."
+      - "Верны ILIKE и lower(email) LIKE: оба находят и '@gmail.com', и '@gmail.COM'. Обычный LIKE пропустит адреса с заглавными буквами, а = ищет буквальную строку '%@gmail.com'."
+
+  - id: L01-14
+    type: write_query
+    boss: true
+    difficulty: 3
+    customer: Служба безопасности
+    title: "Инцидент: подозрительные заказы"
+    ticket: |
+      В базе нашлись странные заказы. Найдите все заказы, у которых сумма равна нулю или не указан адрес доставки, — но только те, что не были отменены.
+      Колонки: order_id, status, amount, delivery_address. Сортировка по order_id.
+    tables: [orders]
+    expected_columns: [order_id, status, amount, delivery_address]
+    ordered: true
+    reference: |
+      SELECT order_id, status, amount, delivery_address
+      FROM orders
+      WHERE (amount = 0 OR delivery_address IS NULL)
+        AND status <> 'cancelled'
+      ORDER BY order_id;
+    hints:
+      - Здесь сразу три ловушки уровня — NULL, приоритет AND/OR и отрицание.
+      - "Таблица orders: amount, delivery_address, status."
+      - "1) Сгруппируй в скобках «сумма 0 ИЛИ адреса нет». 2) Через AND добавь «статус не cancelled». 3) Отсортируй."
+      - "WHERE (amount = 0 OR delivery_address IS ___) AND status <> '___' ORDER BY order_id"
+      - "Без скобок AND выполнился бы раньше OR, и в выборку попали бы отменённые заказы с нулевой суммой. Отсутствие адреса проверяется только через IS NULL."
