@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { levelStats, isLevelUnlocked, isBossOpen, checkPassword } from '../game/progress.js';
-import { TYPE_LABEL, Stars, Modal, Markdown } from './common.jsx';
+import { TYPE_LABEL, Stars } from './common.jsx';
 
 export function nextTask(content, p) {
   for (const l of content.levels) {
@@ -14,7 +14,6 @@ export function nextTask(content, p) {
 }
 
 export default function MapView({ content, progress, update, go }) {
-  const [theory, setTheory] = useState(null);
   const [pw, setPw] = useState('');
   const [pwMsg, setPwMsg] = useState(null);
   const next = nextTask(content, progress);
@@ -45,7 +44,7 @@ export default function MapView({ content, progress, update, go }) {
                 <span className="er-grade">{l.grade}</span>
               </div>
             </div>
-            <button className="link-btn" onClick={() => setTheory(l)} disabled={!open}>Теория</button>
+            <a className="link-btn" href={`#/learn/${l.level}`}>Теория</a>
           </header>
           <p className="er-summary">{l.summary}</p>
           <div className="er-meta">
@@ -123,12 +122,6 @@ export default function MapView({ content, progress, update, go }) {
         ))}
       </section>
 
-      {theory && (
-        <Modal title={`Уровень ${theory.level}. ${theory.title}`} onClose={() => setTheory(null)} wide>
-          <Markdown text={theory.theory} />
-          <p className="book-ref">Подробнее — в книге по SQL, глава {theory.book_chapter}.</p>
-        </Modal>
-      )}
     </div>
   );
 }

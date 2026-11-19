@@ -9,7 +9,8 @@ import ResultTable from './ResultTable.jsx';
 import SchemaPanel from './SchemaPanel.jsx';
 import Hints from './Hints.jsx';
 import SuccessModal from './SuccessModal.jsx';
-import { Markdown, Modal, TYPE_ABOUT, Stars } from './common.jsx';
+import { Modal, TYPE_ABOUT, Stars } from './common.jsx';
+import { TheoryBody, TheoryToc } from './Theory.jsx';
 
 export default function TaskView({ content, entry, progress, update, replace, dbReady, go }) {
   const { task, level } = entry;
@@ -149,8 +150,12 @@ export default function TaskView({ content, entry, progress, update, replace, db
         />
       )}
       {theory && (
-        <Modal title={`Уровень ${level.level}. ${level.title}`} onClose={() => setTheory(false)} wide>
-          <Markdown text={level.theory} />
+        <Modal title={`Уровень ${level.level}. ${level.title}`} onClose={() => setTheory(false)} wide className="theory-modal">
+          <div className="theory-modal-toc">
+            <TheoryToc md={level.theory} prefix="tm" />
+            <a className="link-btn" href={`#/learn/${level.level}`}>Открыть в учебнике</a>
+          </div>
+          <TheoryBody md={level.theory} dbReady={dbReady} go={go} prefix="tm" />
           <p className="book-ref">Подробнее — в книге по SQL, глава {level.book_chapter}.</p>
         </Modal>
       )}

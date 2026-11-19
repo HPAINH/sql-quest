@@ -1,5 +1,6 @@
 const NAV = [
   ['map', 'Карта', '#/'],
+  ['learn', 'Учебник', '#/learn'],
   ['sandbox', 'Песочница', '#/sandbox'],
   ['progress', 'Прогресс', '#/progress'],
 ];

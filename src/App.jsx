@@ -8,11 +8,13 @@ import TaskView from './ui/TaskView.jsx';
 import Sandbox from './ui/Sandbox.jsx';
 import ProgressView from './ui/ProgressView.jsx';
 import Boot from './ui/Boot.jsx';
+import { LearnIndex, LearnView } from './ui/Theory.jsx';
 
 const parseHash = () => {
   const h = location.hash.replace(/^#\/?/, '');
   const [view, arg] = h.split('/');
   if (view === 'task' && arg) return { view: 'task', id: decodeURIComponent(arg) };
+  if (view === 'learn') return { view: 'learn', level: arg ?? null };
   if (view === 'sandbox' || view === 'progress') return { view };
   return { view: 'map' };
 };
@@ -70,6 +72,10 @@ export default function App() {
   let page;
   if (route.view === 'task' && taskIndex[route.id]) {
     page = <TaskView key={route.id} content={content} entry={taskIndex[route.id]} progress={progress} update={update} replace={replace} dbReady={db.state === 'ready'} go={go} />;
+  } else if (route.view === 'learn') {
+    page = route.level != null
+      ? <LearnView content={content} progress={progress} levelNo={route.level} dbReady={db.state === 'ready'} go={go} />
+      : <LearnIndex content={content} progress={progress} go={go} />;
   } else if (route.view === 'sandbox') {
     page = <Sandbox content={content} dbReady={db.state === 'ready'} />;
   } else if (route.view === 'progress') {

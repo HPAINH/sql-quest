@@ -9,6 +9,7 @@ import { generate, loadInto, TABLE_ORDER } from './dataset.mjs';
 import { canonRows, fingerprint, hide, rowKey, sortedKeys, keySeq } from '../src/engine/canon.js';
 import { guard, features } from '../src/engine/sqlscan.js';
 import { parsePlan, checkPlan } from '../src/engine/plan.js';
+import { codeBlocks, parseTheory, wordCount, isWriteSql } from '../src/engine/theory.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const errors = [];
@@ -88,6 +89,29 @@ const schema = TABLE_ORDER.map((t) => ({
 }));
 for (const t of schema) for (const c of t.columns) if (!c.about) warn.push(`schema: no description for ${t.name}.${c.name}`);
 
+let theoryWords = 0;
+const THEORY_LANGS = new Set(['sql', 'sql-error', 'sql-plan', 'sql-static', 'text']);
+async function checkTheory(id, md) {
+  if (!parseTheory(md).sections.length && md.length > 3000) fail(id, 'длинная теория без разделов ##');
+  for (const b of codeBlocks(md)) {
+    const at = `${id} [${b.where}]`;
+    if (!THEORY_LANGS.has(b.lang)) { fail(at, `неизвестный тип блока кода: ${b.lang}`); continue; }
+    if (b.lang === 'sql-static' || b.lang === 'text') continue;
+    const head = b.code.trim().split('\n')[0].slice(0, 60);
+    if (b.lang === 'sql-plan') {
+      const p = await explain(b.code.replace(/^\s*EXPLAIN(\s*\([^)]*\))?(\s+ANALYZE)?\s+/i, ''));
+      if (p.error) fail(at, `план не строится: ${p.error.message} — ${head}`);
+      continue;
+    }
+    const write = isWriteSql(b.code);
+    const blocked = write ? guard(b.code, 'write') : guard(b.code);
+    if (blocked) { fail(at, `пример заблокирован сканером: ${blocked} — ${head}`); continue; }
+    const r = write ? await runScript(b.code, 'shop') : await run(b.code);
+    if (b.lang === 'sql' && r.error) fail(at, `пример падает: ${r.error.message} — ${head}`);
+    if (b.lang === 'sql-error' && !r.error) fail(at, `пример с ошибкой выполнился без ошибки — ${head}`);
+  }
+}
+
 const levelFiles = fs.readdirSync(path.join(ROOT, 'content/levels')).filter((f) => f.endsWith('.yaml')).sort();
 const levels = [];
 const TYPES = new Set(['write_query', 'target_table', 'fix_bug', 'predict', 'fill_blank', 'choose', 'optimize', 'write_dml']);
@@ -102,7 +126,11 @@ const shuffle = (arr, seed) => {
 
 for (const file of levelFiles) {
   const L = yaml.load(fs.readFileSync(path.join(ROOT, 'content/levels', file), 'utf8'));
-  const out = { level: L.level, grade: L.grade, title: L.title, tag: L.tag, summary: L.summary, theory: L.theory, book_chapter: L.book_chapter, tasks: [] };
+  const theoryFile = path.join(ROOT, 'content/theory', file.replace(/\.yaml$/, '.md'));
+  const theory = fs.existsSync(theoryFile) ? fs.readFileSync(theoryFile, 'utf8') : L.theory;
+  if (fs.existsSync(theoryFile)) await checkTheory(`L${String(L.level).padStart(2, '0')} теория`, theory);
+  theoryWords += wordCount(theory);
+  const out = { level: L.level, grade: L.grade, title: L.title, tag: L.tag, summary: L.summary, theory, book_chapter: L.book_chapter, tasks: [] };
   const bosses = L.tasks.filter((t) => t.boss);
   if (bosses.length !== 1) fail(`L${L.level}`, 'у уровня должен быть ровно один босс');
   for (const t of L.tasks) {
@@ -318,6 +346,7 @@ fs.mkdirSync(path.join(ROOT, 'src/content'), { recursive: true });
 fs.writeFileSync(path.join(ROOT, 'src/content/content.json'), JSON.stringify(content));
 const nTasks = levels.reduce((s, l) => s + l.tasks.length, 0);
 console.log(`✓ ${levels.length} уровней, ${nTasks} задач, все эталоны прошли на обоих датасетах`);
+console.log(`✓ теория: ${theoryWords.toLocaleString('ru-RU')} слов, все примеры выполняются`);
 
 if (!process.argv.includes('--no-dump')) {
   const clean = new PGlite({ extensions: { vector } });
